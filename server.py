@@ -1,6 +1,7 @@
 from fastapi import FastAPI, APIRouter, HTTPException
 from typing import List
 from pathlib import Path
+from types import SimpleNamespace
 from datetime import datetime
 import os
 import re
@@ -179,9 +180,17 @@ def generate_endpoint(doc: ProblemDoc):
             except Exception:
                 pass
 
-        # outputschema 생성
+        # outputschema 생성 (emit anchors)
         outputschema_path = problem_dir / "outputschema.json"
-        build_outputschema(str(problem_dir), str(outputschema_path), args=None)
+        args = SimpleNamespace(
+            emit_anchors=True,
+            frame="14x8",
+            dpi=300,
+            vectorizer="potrace",
+            points_per_path=600,
+            only_picture=False,
+        )
+        build_outputschema(str(problem_dir), str(outputschema_path), args=args)
 
         # CodeGen 실행
         code_text = run_codegen(str(outputschema_path), image_paths, str(problem_dir))

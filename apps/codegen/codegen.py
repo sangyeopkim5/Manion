@@ -48,21 +48,38 @@ def run_codegen(outputschema_path: str, image_paths: list[str], out_dir: str) ->
     for img in image_paths:
         if Path(img).exists():
             encoded_images.append({
-                "name": Path(img).name,
+                "path": str(img),
                 "data": encode_image_to_base64(img)
             })
 
-    # GPT 메시지 구성
-    user_content = (
-        "아래는 LinearIR.v1 기반 outputschema.json과 문제 이미지들이다.\n"
-        "출력은 ---CAS-JOBS--- 섹션(JSON 배열)과 Manim Scene 코드 1개(Scene=ManimCode)만 포함하라.\n\n"
-        f"[outputschema.json]\n{json.dumps(schema, ensure_ascii=False, indent=2)}\n\n"
-        f"[images]\n{[img['name'] for img in encoded_images]}"
-    )
+    # GPT 메시지 구성: 1) outputschema 전체 텍스트 2) 이미지 base64 3) system prompt(위)
+    def _mime_for(path: str) -> str:
+        ext = Path(path).suffix.lower()
+        if ext in [".png"]:
+            return "image/png"
+        if ext in [".jpg", ".jpeg", ".jpe"]:
+            return "image/jpeg"
+        return "image/*"
+
+    user_parts = []
+    user_parts.append({
+        "type": "text",
+        "text": (
+            "아래는 LinearIR.v1 기반 outputschema.json과 문제 이미지들이다.\n"
+            "출력은 ---CAS-JOBS--- 섹션(JSON 배열)과 Manim Scene 코드 1개(Scene=ManimCode)만 포함하라.\n\n"
+            f"[outputschema.json]\n{json.dumps(schema, ensure_ascii=False, indent=2)}\n\n"
+        ),
+    })
+    for img in encoded_images:
+        mime = _mime_for(img.get("path", ""))
+        user_parts.append({
+            "type": "image_url",
+            "image_url": {"url": f"data:{mime};base64,{img['data']}"},
+        })
 
     messages = [
         {"role": "system", "content": system_prompt},
-        {"role": "user", "content": user_content},
+        {"role": "user", "content": user_parts},
     ]
 
     response = client.chat.completions.create(

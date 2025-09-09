@@ -85,6 +85,32 @@ parse_json → build_shapes → decide_mode → scale(place) → frame_guard →
 우선순위(충돌 시 배치 결정): (1) 면적/둘레 큰 도형 → (2) id 사전순
 수식 보호선: x=sep_line_x를 넘지 않도록 강제(도형은 right_box 진입 금지)
 
+[실수 좌표 변환 & 재구성 규칙 — 필수]
+- 입력이 raster_with_anchors일 때, transform.px_to_manim = {A, t}를 사용해 모든 픽셀 좌표를 Manim 실수 좌표로 변환한다.
+  - 변환식(열벡터):  [x_m]   [A11 A12][x_px] + [t1]
+                    [y_m] = [A21 A22][y_px]   [t2]
+  - 구현: x_m = A[0][0]*x_px + A[0][1]*y_px + t[0];  y_m = A[1][0]*x_px + A[1][1]*y_px + t[1]
+
+- anchors.edges[*].kind=="polyline_px"이면 pts_px를 변환하여 다음 규칙으로 VMobject를 만든다:
+  1) 선분(점 2개) → Line(P0,P1)
+  2) 점수 ≥3이고 첫점-끝점 거리가 len_tol 이하이면 폐곡선(Polygon)으로 간주해 채운 도형(색 30~50% 불투명) 생성
+  3) 그 외는 polyline: VMobject().set_points_as_corners([P0,P1,...])
+  - len_tol = transform.tolerances.len_px를 A의 평균 스케일로 환산하여 비교한다(픽셀-스케일 차 보정).
+  - pos_tol, ang_tol 또한 마찬가지로 환산하여 잡스파이크/미세 지그재그를 제거(짧은 톱니, 한 픽셀 삐져나옴 무시).
+
+- 여러 폴리라인이 있을 때 대표 도형 선택 기준:
+  (a) 폐곡선이면 절댓값 면적 최댓값, (b) 아니면 길이(총 호장) 최댓값.
+  대표 도형은 좌측 박스에 배치하고, 잔여 도형은 보조 레일(aux_top→aux_bot)로 보존.
+
+- 그래프 후보(axes_hints, curves)가 있으면:
+  - bounding box를 읽어 Axes를 left_box에 길이맞춤으로 생성하고(팁 False), 변환된 점들을 Plot/Polyline로 겹친다.
+  - 점이 많고 매끈하면 CubicBezier/ParametricFunction로 근사, 아니면 set_points_as_corners로 그대로 그린다.
+  - 눈금은 5~7개 선에서 자동 간격 추정; 축 레이블은 생략하거나 간단화(중학수학 범위).
+
+- 모든 좌측 오브젝트는 “1회 균등 스케일 원칙”을 적용한다(이미 정의된 s=min(...) 규칙을 반드시 사용). 이후 재스케일 금지.
+
+- 수식/텍스트는 우측 박스에서 RollingBoard로 전개하며, 좌측 형상 변화(강조/표시/보조선)는 step마다 link_left로 동기화한다.
+
 ===== 크기 규칙 =====
 등급 스케일: L=0.85, M=0.65, S=0.45 (컨테이너 대비)
 연속 스케일 k: 기본 1.0, 1사분면/강조 시 안전상한 적용(기본 0.45)
@@ -124,6 +150,8 @@ resolve_collisions(objs, priority) → 우선순위 기반 충돌해결
 parse_json_shapes(path_or_dict) → (shapes:list, meta)
 
 build_vmobject_from_polyline(points) → VMobject
+px_to_manim(pt_px, A, t) → np.array([A11*x+A12*y+t1, A21*x+A22*y+t2, 0.0])
+build_vmobject_from_polyline(points, closed_if_within=len_tol) → Line/Polygon/VMobject 선택 생성
 
 ※ 위 함수/클래스는 Scene 내부에서 반드시 정의하고 사용하라.
 
@@ -169,6 +197,8 @@ Scene은 정확히 1개.
 - `target_expr`에 백슬래시(`\`)가 있으면 재작성.
 - `2x`, `x^2`, `3(a+b)` 형태가 나오면 재작성(`2*x`, `x**2`, `3*(a+b)`).
 - Manim 코드에 등장한 모든 `[[CAS:<id>]]`는 JSON 배열에 존재해야 하며, 누락 시 재작성.
+- JSON 입력이 raster_with_anchors면, 좌측 도형/선/그래프는 반드시 px_to_manim(A,t)로 변환된 실수 좌표로 생성해야 한다(정수 좌표 금지).
+
 
 “CAS-JOBS의 target_expr에는 [[CAS:...]] 플레이스홀더를 절대 쓰지 말 것.”
 “합성 결과(예: RESULT)는 Manim 코드에서 [[CAS:S1]]+[[CAS:S2]]+...처럼 표현하고, CAS-JOBS에는 개별 원자 작업(S1..S6)만 넣을 것.”

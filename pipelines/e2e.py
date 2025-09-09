@@ -4,6 +4,7 @@ import os
 import re
 import shutil
 import traceback
+from types import SimpleNamespace
 from pathlib import Path
 from typing import List, Dict
 
@@ -220,9 +221,17 @@ def run_pipeline(doc: ProblemDoc) -> str:
             except Exception:
                 pass
 
-        print("[e2e] Building outputschema.json...", file=sys.stderr)
+        print("[e2e] Building outputschema.json (emit_anchors=True)...", file=sys.stderr)
         outputschema_path = problem_dir / "outputschema.json"
-        build_outputschema(str(problem_dir), str(outputschema_path), args=None)
+        args = SimpleNamespace(
+            emit_anchors=True,
+            frame="14x8",
+            dpi=300,
+            vectorizer="potrace",
+            points_per_path=600,
+            only_picture=False,
+        )
+        build_outputschema(str(problem_dir), str(outputschema_path), args=args)
 
     except Exception as e:
         print(f"[ERROR] GraphSampling failed: {e}", file=sys.stderr)
