@@ -1,0 +1,2 @@
+on_missing = "warn_token" # warn_token | fail_build
+decimal_digits_default = 6
