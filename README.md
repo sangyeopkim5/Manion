@@ -191,3 +191,26 @@ server.py
 /codegen/generate, /cas/run, /e2e API 제공
 
 결과 파일은 ManimcodeOutput/<problem_name>/에 저장
+
+🔄 엔드투엔드 데이터 흐름(상세)
+
+- **1) 입력 수신**: `ProblemDoc(items, image_path)`을 API(`/e2e`, `/codegen/generate`) 또는 CLI(`pipelines/e2e.py`)로 전달
+- **2) 작업 디렉토리 준비**: `ManimcodeOutput/<문제이름>/` 생성, `input.json` 저장, 원본 이미지 복사
+- **3) Graphsampling → outputschema.json**: `apps/graphsampling/builder.py::build_outputschema()`가 LinearIR(`schema="LinearIR.v1"`)과 리소스 메타를 생성. `emit_anchors=True`면 `anchor_ir.py::build_anchor_item()`으로 `_anchorir_out.svg` 및 `raster_with_anchors` 삽입
+- **4) CodeGen (GPT 호출)**: `apps/codegen/codegen.py::run_codegen()`이 `outputschema.json`과 이미지(base64)를 `system_prompt.txt`와 함께 모델로 보내 `ManimCode + ---CAS-JOBS---` 텍스트를 반환하고 `codegen_output.py`로 저장
+- **5) CAS 작업 추출/정규화**: `server.py::_extract_jobs_and_code()` 또는 `pipelines/e2e.py::_extract_jobs_and_code()`가 `---CAS-JOBS---` JSON 배열과 상단 Manim 코드를 분리. `\frac{a}{b}` → `(a)/(b)` 등 SymPy 친화 표기로 정규화
+- **6) CAS 실행(SymPy)**: `apps/cas/compute.py::run_cas()`가 `CASJob` 리스트를 받아 `simplify/expand/factor/evaluate/solve` 수행 → `CASResult(id, result_tex, result_py)` 반환. CLI 경로는 `_resolve_and_run_cas()`로 `[[CAS:id]]` 의존성 순서를 자동 해결
+- **7) 코드 치환/저장**: `apps/render/fill.py::fill_placeholders()`가 Manim 코드 내 `[[CAS:id]]`를 `{result_tex}`로 치환. 최종 코드 `ManimcodeOutput/<문제>/<문제>.py`와 실행 가이드 `README.md` 저장
+
+📌 주요 엔드포인트/실행 진입점
+- **API**: `POST /e2e`(E2E 전체), `POST /codegen/generate`(동일 플로우), `POST /cas/run`(CAS 단독)
+- **서버 앱**: `server.py` (라우터 포함)
+- **로컬 파이프라인**: `python -m pipelines.e2e <image_path> <json_path>`
+
+📎 산출물
+- `ManimcodeOutput/<문제>/input.json`, `<원본이미지>`, `outputschema.json`, `codegen_output.py`, `<문제>.py`, `README.md`
+
+⚙️ 설정
+- OpenAI 모델: `configs/openai.toml`
+- SymPy 기본 가정: `configs/sympy.toml`
+- 렌더 옵션: `configs/render.toml`
