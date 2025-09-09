@@ -13,6 +13,7 @@ from sympy import (
     factor,
     pi,
     Function,
+    solve,
 )
 from sympy.parsing.sympy_parser import (
     parse_expr,
@@ -39,34 +40,57 @@ SAFE_FUNCS = {
 def run_cas(jobs: List[CASJob]) -> List[CASResult]:
     out: List[CASResult] = []
     for j in jobs:
-        expr_s = j.expr.strip()
+        expr_s = (j.target_expr or "").strip()
         try:
-            # Allow only functions present in SAFE_FUNCS. Without this pre-check
-            # unknown tokens like ``badfunc(1)`` would be interpreted as a
-            # multiplication of symbols when using implicit multiplication.
+            # 허용된 함수만 확인
             for match in re.finditer(r"([A-Za-z_][A-Za-z0-9_]*)\s*\(", expr_s):
                 name = match.group(1)
                 if name not in SAFE_FUNCS:
                     raise ValueError(f"function {name} not allowed")
 
-            # 암시적 곱셈을 지원하는 변환 규칙 설정
+            # 암시적 곱셈 허용 파서
             transformations = standard_transformations + (
                 implicit_multiplication_application,
             )
-            # parse_expr을 사용하여 암시적 곱셈 지원 (예: 2a -> 2*a)
             expr = parse_expr(expr_s, transformations=transformations, local_dict=SAFE_FUNCS)
+
+            # 함수 안전성 체크
             for f in expr.atoms(Function):
                 name = f.func.__name__
                 if name not in SAFE_FUNCS:
                     raise ValueError(f"function {name} not allowed")
-            val = simplify(expr)
-            out.append(CASResult(id=j.id, result_tex=latex(val), result_py=str(val)))
+
+            # Task에 따른 분기
+            task = j.task.lower() if j.task else "simplify"
+            if task == "simplify":
+                val = simplify(expr)
+            elif task == "expand":
+                val = expand(expr)
+            elif task == "factor":
+                val = factor(expr)
+            elif task == "evaluate":
+                val = expr.evalf()
+            elif task == "solve":
+                if not j.variables:
+                    raise ValueError("solve requires 'variables'")
+                vars = [symbols(v) for v in j.variables]
+                val = solve(expr, *vars, dict=True)
+            else:
+                raise ValueError(f"Unsupported task: {task}")
+
+            out.append(
+                CASResult(
+                    id=j.id,
+                    result_tex=latex(val),
+                    result_py=str(val),
+                )
+            )
+
         except Exception as e:
-            # 더 자세한 오류 정보 제공
             import traceback
             error_detail = (
                 f"CAS error in {j.id}: {e}\nExpression: {expr_s}\nTraceback: {traceback.format_exc()}"
             )
             raise ValueError(error_detail)
-    return out
 
+    return out

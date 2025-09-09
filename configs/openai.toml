@@ -2,6 +2,6 @@
 codegen = "gpt-5"
 
 [gen]
-temperature = 1.0
+temperature = 1
 max_tokens  = 4096
 

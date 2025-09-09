@@ -1,130 +1,193 @@
-Manion
+📘 Manion-CAS README
+🚀 개요
 
-수학 문제를 점 데이터로 샘플링하고, CAS 계산을 거쳐 Manim 애니메이션으로 변환하는 AI 기반 시스템입니다.
+Manion-CAS는 수학 문제를 입력하면 다음 과정을 자동화하는 시스템입니다:
 
-Features
+Graphsampling → 문제 이미지 + OCR JSON에서 outputschema.json 생성
 
-수학 문제 이미지 분석 및 좌표 샘플링
+CodeGen → outputschema.json + 이미지 → GPT 호출
 
-GPT-5 기반 Manim 코드 생성
+---CAS-JOBS--- JSON (계산 태스크)
 
-CAS(Computer Algebra System) 계산 지원
+ManimCode (문제 풀이 시각화 코드)
 
-자동 placeholder 치환 및 최종 코드 생성
+CAS → CAS-JOBS를 Sympy로 계산
 
-전체 시스템 로직 흐름
-1. 데이터 입력 (Input)
-apps/graphsampling/Probleminput/
-├── .jpg 파일: 수학 문제 이미지
-└── .json 파일: OCR 결과 및 문제 구조화 데이터
+저장 → Manim 코드 파일(.py)과 실행 가이드(README.md) 자동 생성
 
-2. 그래프 샘플링 단계 (Graph Sampling)
-apps/graphsampling/builder.py
-├── 이미지 → 좌표화 (anchor_ir.py)
-├── 좌표 검증 및 JSON 저장
-└── outputjson/ 폴더에 점 데이터 결과 저장
-
-3. 메인 파이프라인 (E2E Processing)
-server.py → /e2e 엔드포인트
-├── 1단계: route_problem() - 문제 분류 및 라우팅
-├── 2단계: generate_manim() - GPT-5를 사용한 Manim 코드 생성
-├── 3단계: run_cas() - CAS 계산 실행
-└── 4단계: fill_placeholders() - 최종 코드 생성
-
-4. CAS 계산 단계
-apps/cas/compute.py
-├── SymPy 기반 수식 파싱 및 계산
-├── 보안 검증: SAFE_FUNCS 내 함수만 허용
-└── 결과: LaTeX 및 Python 문자열
-
-5. 렌더링 단계
-apps/render/fill.py
-├── CAS 결과 매핑
-├── Placeholder 치환 ([[CAS:id]])
-└── 최종 Manim 코드 생성
-
-6. 출력 (Output)
-ManimcodeOutput/ 폴더에 결과 저장
-├── 문제 이름별 폴더 생성
-├── 실행 가능한 Manim 코드 (.py)
-└── 실행 방법 안내 README.md 포함
-
-7. API 구조
-FastAPI 기반 엔드포인트:
-├── /e2e: 전체 파이프라인 실행
-├── /codegen/generate: 코드 생성만
-├── /cas/compute: CAS 계산만
-└── /render/fill: 렌더링만
-
-Layout
-manion/
+📂 디렉토리 구조 (중요 부분만)
+manion-main/
 ├── apps/
-│   ├── graphsampling/              # 입력 및 샘플링
-│   │   ├── anchor_ir.py
-│   │   ├── builder.py
-│   │   ├── outputjson/
-│   │   └── Probleminput/
-│   ├── cas/
-│   │   ├── compute.py
-│   │   ├── server.py
-│   │   └── tests/
 │   ├── codegen/
-│   │   ├── codegen.py
-│   │   ├── server.py
-│   │   ├── prompt_templates/
-│   │   └── tests/
-│   ├── render/
-│   │   ├── fill.py
-│   │   ├── server.py
-│   │   └── tests/
-│   └── router/
-│       ├── router.py
-│       ├── server.py
-│       └── tests/
+│   │   └── codegen.py        # CodeGen (outputschema + 이미지 → GPT 호출)
+│   ├── cas/
+│   │   └── compute.py        # Sympy 기반 CAS 실행
+│   ├── graphsampling/
+│   │   └── builder.py        # outputschema.json 생성
+│   └── render/
+│       └── fill.py           # (이전 방식, placeholder 채움 — 현재는 불필요)
+├── libs/
+│   └── schemas.py            # Pydantic 모델 정의 (ProblemDoc, CASJob, CASResult 등)
 ├── configs/
-│   ├── openai.toml
+│   ├── openai.toml           # OpenAI API 모델 설정
 │   ├── render.toml
 │   └── sympy.toml
-├── libs/
-│   ├── io_utils.py
-│   ├── layout.py
-│   ├── schemas.py
-│   └── tokens.py
-├── pipelines/
-│   ├── e2e.py
-│   └── tests/
-├── ManimcodeOutput/
-│   ├── 중1sample/
-│   │   ├── 중1sample.py
-│   │   └── README.md
-│   └── ...
-├── server.py
+├── system_prompt.txt          # CodeGen용 프롬프트 (CAS-JOBS + ManimCode 규칙 포함)
+├── server.py                  # FastAPI 서버 (e2e / codegen / cas API 제공)
 ├── requirements.txt
-├── system_prompt.txt
-└── README.md
+└── ManimcodeOutput/           # 출력 코드/README 저장 디렉토리
 
-실행법
-1. 가상환경 생성 및 활성화
-# Windows PowerShell
-cd manion
+⚙️ 설치 방법
+1. 환경 설정
+git clone <repo-url>
+cd manion-main
 py -3.11 -m venv .venv311
-.\.venv311\Scripts\Activate.ps1
-pip install -U pip setuptools wheel
+.venv311\Scripts\activate   
+
+# (Windows PowerShell)
+
+2. 의존성 설치
+python -m pip install --upgrade pip setuptools wheel
+
 pip install -r requirements.txt
 
-2. 환경 변수 설정 (.env)
-OPENAI_API_KEY=your_api_key_here
+3. OpenAI API 키 설정
 
-3. 서버 실행
+PowerShell:
+
+$env:OPENAI_API_KEY="sk-여기에_API키"
+
+
+혹은 .env 파일 생성:
+
+OPENAI_API_KEY=sk-여기에_API키
+
+▶️ 실행 방법
+1. 서버 실행
 uvicorn server:app --reload --port 8000
 
-4. API 문서
 
-http://127.0.0.1:8000/docs
+실행 후:
 
-Health Check: http://127.0.0.1:8000/health
+http://127.0.0.1:8000
+ → 기본 상태 메시지
 
-5. E2E 테스트
-python -m pipelines.e2e "apps/graphsampling/Probleminput/중1sample/중1sample.jpg" "apps/graphsampling/Probleminput/중1sample/중1sample.json"
+http://127.0.0.1:8000/health
+ → 상태 체크
 
-##python 11ver 필수. portrace와 inkscape 때문. 10이상은 내장 함수때문.
+🔌 API 엔드포인트
+1. /codegen/generate
+
+입력: ProblemDoc (OCR items + 이미지 경로)
+출력:
+
+{
+  "status": "ok",
+  "cas_results": [
+    {"task": "simplify", "expr": "x^2+2x+1", "result": "x**2+2*x+1"},
+    {"task": "factor", "expr": "x^2+2x+1", "result": "(x + 1)**2"}
+  ],
+  "manim_code": "from manim import *\n\nclass ManimCode(Scene): ..."
+}
+
+
+cas_results: 사람이 읽기 좋은 CAS 실행 결과 (task, expr, result)
+
+manim_code: Manim 시각화 코드 (앞부분 미리보기만 반환, 전체는 파일 저장됨)
+
+결과 파일: ManimcodeOutput/<problem_name>/<problem_name>.py
+
+2. /cas/run
+
+입력: CASJob 리스트
+
+[
+  {"id": "1", "task": "simplify", "target_expr": "x^2+2x+1", "variables": ["x"]}
+]
+
+
+출력:
+
+[
+  {"id": "1", "result_tex": "x^{2} + 2 x + 1", "result_py": "x**2 + 2*x + 1"}
+]
+
+3. /e2e
+
+입력: ProblemDoc
+
+이미지와 OCR JSON을 받아 Graphsampling → CodeGen → CAS → ManimCode 저장을 한 번에 실행
+
+출력: /codegen/generate와 동일 (cas_results_pretty + manim_code).
+
+📜 CodeGen Prompt (system_prompt.txt)
+
+출력은 반드시 ---CAS-JOBS--- JSON + ManimCode(Scene=ManimCode)
+
+CAS 태스크 예시:
+
+{
+  "task": "solve",
+  "target_expr": "x^2 - 4",
+  "variables": ["x"]
+}
+
+
+ManimCode는 SEC_PROBLEM → SEC_GIVENS → SEC_WORK → SEC_RESULT 구조
+
+정답은 마지막에 강조 표시
+
+🧩 전체 처리 흐름
+ProblemDoc (OCR + Image)
+   ↓
+Graphsampling (builder.py) → outputschema.json
+   ↓
+CodeGen (codegen.py + GPT)
+   ↓
+ ┌───────────────┐
+ │ ---CAS-JOBS---│ → run_cas() → CAS 결과
+ │ ManimCode     │ → .py 파일 저장
+ └───────────────┘
+   ↓
+최종 반환: {"cas_results": [...], "manim_code": "..."}
+
+✅ 예시 실행
+요청
+curl -X POST "http://127.0.0.1:8000/e2e" \
+  -H "Content-Type: application/json" \
+  -d '{
+        "items": [{"bbox": [0,0,10,10], "category": "equation", "text": "x^2+2x+1"}],
+        "image_path": "apps/graphsampling/Probleminput/중1sample/중1sample.jpg"
+      }'
+
+응답
+{
+  "status": "ok",
+  "cas_results": [
+    {"task": "simplify", "expr": "x^2+2x+1", "result": "x**2 + 2*x + 1"},
+    {"task": "factor", "expr": "x^2+2x+1", "result": "(x + 1)**2"}
+  ],
+  "manim_code": "from manim import *\n\nclass ManimCode(Scene): ..."
+}
+
+🛠️ 개발자 노트
+
+libs/schemas.py
+
+CASJob: task, target_expr, variables, constraints, assumptions 필드
+
+apps/cas/compute.py
+
+Sympy 기반 실행. task에 따라 simplify, expand, factor, evaluate, solve 지원
+
+apps/codegen/codegen.py
+
+GPT에 outputschema.json + .jpg 전달
+
+system_prompt에 따라 CAS-JOBS + ManimCode 생성
+
+server.py
+
+/codegen/generate, /cas/run, /e2e API 제공
+
+결과 파일은 ManimcodeOutput/<problem_name>/에 저장

@@ -15,7 +15,11 @@ class ProblemDoc(BaseModel):
 
 class CASJob(BaseModel):
     id: str
-    expr: str
+    task: str                      # evaluate | solve | factor | expand | geometry_check | probability
+    target_expr: str               # 수식 문자열
+    variables: Optional[List[str]] = []   # solve 등에서 필요한 변수 리스트
+    constraints: Optional[List[str]] = [] # 선택적 제약조건
+    assumptions: Optional[str] = "default real domain"  # 선택적 도메인 가정
 
 
 class CASResult(BaseModel):
@@ -36,4 +40,3 @@ class RenderInput(BaseModel):
 
 class RenderOutput(BaseModel):
     manim_code_final: str
-

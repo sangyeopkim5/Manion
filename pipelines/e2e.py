@@ -1,65 +1,298 @@
-import json
 import sys
+import json
 import os
+import re
 import shutil
+import traceback
 from pathlib import Path
-from typing import List
+from typing import List, Dict
 
-from libs.schemas import ProblemDoc, CASJob
-from apps.codegen.codegen import generate_manim
-from apps.cas.compute import run_cas
-from apps.render.fill import fill_placeholders
+from libs.schemas import ProblemDoc, CASJob, CASResult
 from apps.graphsampling.builder import build_outputschema
+from apps.codegen.codegen import run_codegen
+from apps.cas.compute import run_cas           # CAS 실행 (Sympy)  ← uses target_expr/task  :contentReference[oaicite:2]{index=2}
+from apps.render.fill import fill_placeholders  # Placeholder 치환(없으면 원본 반환)       :contentReference[oaicite:3]{index=3}
 
+
+# --- helpers -----------------------------------------------------------------
+
+def _strip_code_fences(s: str) -> str:
+    """
+    Remove leading and trailing markdown code fences (``` or ```python).
+    This normalizes CodeGen output before extracting CAS-JOBS and code.
+    """
+    if not s:
+        return s
+    s = re.sub(r"^\s*```(?:python)?\s*", "", s)
+    s = re.sub(r"\s*```\s*$", "", s)
+    return s
+
+# --- CAS dependency resolution helpers --------------------------------------
+_PLACEHOLDER_RE = re.compile(r"\[\[CAS:([A-Za-z0-9_\-]+)\]\]")
+
+def _contains_placeholder(s: str) -> bool:
+    return bool(_PLACEHOLDER_RE.search(s or ""))
+
+def _subst_placeholders(expr: str, got: Dict[str, CASResult]) -> str:
+    def repl(m):
+        _id = m.group(1)
+        r = got.get(_id)
+        if not r:
+            # 아직 결과 없음 → 그대로 반환하여 다음 라운드에서 재시도
+            return m.group(0)
+        # CAS 내부 표현으로 치환 (안전하게 괄호로 감싸기)
+        return f"({r.result_py})"
+    return _PLACEHOLDER_RE.sub(repl, expr)
+
+def _resolve_and_run_cas(jobs_raw: List[dict]) -> List[CASResult]:
+    """
+    1) 플레이스홀더 없는 원자 작업부터 실행
+    2) 얻은 결과로 남은 작업의 target_expr에서 [[CAS:id]] 치환
+    3) 더 이상 진행이 안되면 에러(순환/누락)
+    """
+    # id -> raw job 사전
+    by_id: Dict[str, dict] = {}
+    for j in jobs_raw:
+        jid = str(j.get("id", "")).strip()
+        if not jid:
+            raise RuntimeError("CAS-JOBS에 id가 없습니다.")
+        by_id[jid] = j
+
+    remaining = set(by_id.keys())
+    results: Dict[str, CASResult] = {}
+    max_rounds = len(remaining) + 5
+
+    for _ in range(max_rounds):
+        # 1) 현재 라운드에 실행 가능한 job 선별(플레이스홀더가 없는 식)
+        batch_ids: List[str] = []
+        for jid in list(remaining):
+            expr = by_id[jid].get("target_expr", "")
+            expr_sub = _subst_placeholders(expr, results)
+            by_id[jid]["_expr_sub"] = expr_sub  # 캐시
+            if not _contains_placeholder(expr_sub):
+                batch_ids.append(jid)
+
+        if not batch_ids:
+            # 진행 불가 → 아직 남아있다면 순환/누락
+            if remaining:
+                unresolved = []
+                for jid in remaining:
+                    expr_sub = by_id[jid].get("_expr_sub", by_id[jid].get("target_expr", ""))
+                    unresolved.append({"id": jid, "target_expr": expr_sub})
+                raise RuntimeError(f"CAS 의존성 해소 실패: {unresolved}")
+            break
+
+        # 2) 배치 실행 (compute.py는 CASJob.target_expr를 사용)
+        batch_jobs: List[CASJob] = []
+        for jid in batch_ids:
+            src = by_id[jid]
+            batch_jobs.append(CASJob(
+                id=jid,
+                task=src.get("task") or "simplify",
+                target_expr=src.get("_expr_sub", src.get("target_expr", "")),
+                variables=src.get("variables") or [],
+                constraints=src.get("constraints") or [],
+                assumptions=src.get("assumptions") or "default real domain",
+            ))
+
+        batch_res = run_cas(batch_jobs)
+
+        # 3) 결과 저장 및 제거
+        for r in batch_res:
+            results[r.id] = r
+            remaining.discard(r.id)
+
+        if not remaining:
+            break
+
+    return list(results.values())
+
+def _find_balanced_json_array(text: str, start_idx: int) -> str:
+    i = text.find("[", start_idx)
+    if i == -1:
+        raise RuntimeError("CAS-JOBS JSON 배열 시작 '['를 찾지 못했습니다.")
+    depth = 0
+    for j in range(i, len(text)):
+        c = text[j]
+        if c == "[":
+            depth += 1
+        elif c == "]":
+            depth -= 1
+            if depth == 0:
+                return text[i:j+1]
+    raise RuntimeError("대괄호 균형이 맞는 JSON 배열 끝을 찾지 못했습니다.")
+
+def _normalize_expr_for_sympy(s: str) -> str:
+    """
+    CodeGen의 CAS-JOBS target_expr가 LaTeX 형태(\frac, \left..\right..)일 수 있으므로
+    Sympy 파서가 이해할 수 있게 정규화한다.
+    """
+    if not s:
+        return s
+    # \left, \right 제거
+    s = s.replace(r"\left", "").replace(r"\right", "")
+    # \frac{a}{b} -> (a)/(b)
+    s = re.sub(r"\\frac\s*\{([^{}]+)\}\s*\{([^{}]+)\}", r"(\1)/(\2)", s)
+    # \pi -> pi 등: 역슬래시 제거(기본 심볼명은 sympy식)
+    s = s.replace("\\", "")
+    # 여백 정리
+    return " ".join(s.split())
+
+
+def _extract_jobs_and_code(code_text: str):
+    """
+    CodeGen 출력에서 ---CAS-JOBS--- JSON 배열을 추출하고,
+    나머지(상단)의 Manim 코드를 분리해서 반환한다.
+    - 코드펜스가 있어도 제거 후 처리
+    - 마커 위치는 상/하 어디든 허용
+    - 닫는 --- 없어도 대괄호 균형으로 JSON 배열만 안전 추출
+    - JSON이 부분적으로 깨져도 salvage 시도
+    """
+    # 0) 코드펜스 제거
+    code_text = _strip_code_fences(code_text)
+
+    # 1) 마커 검색
+    m = re.search(r"-{3}CAS-JOBS-{3}", code_text)
+    if not m:
+        raise RuntimeError("CAS-JOBS 섹션을 찾을 수 없습니다.")
+    mark = m.start()
+
+    # 2) 코드/꼬리 분리
+    manim_code = code_text[:mark].strip()
+    tail = code_text[mark + len("---CAS-JOBS---"):]
+
+    # 3) 대괄호 균형으로 JSON 배열 추출
+    json_text = _find_balanced_json_array(tail, 0)
+
+    # 4) 표준 파싱, 실패 시 salvage
+    try:
+        jobs_raw = json.loads(json_text)
+    except Exception:
+        obj_pat = re.compile(r"\{[^{}]*?(\"task\"\s*:\s*\"[^\"]+\")[^{}]*?(\"target_expr\"\s*:\s*\"[^\"]+\")[^{}]*?\}", re.S)
+        jobs_raw = []
+        for mm in obj_pat.finditer(json_text):
+            frag = re.sub(r",\s*(\}|$)", r"\1", mm.group(0))
+            try:
+                jobs_raw.append(json.loads(frag))
+            except Exception:
+                pass
+        if not jobs_raw:
+            raise RuntimeError("CAS-JOBS JSON 파싱 실패(수복 불가).")
+
+    # 5) id 자동 부여 및 SymPy 정규화
+    for idx, j in enumerate(jobs_raw, 1):
+        j.setdefault("id", str(idx))
+        j["target_expr"] = _normalize_expr_for_sympy(j.get("target_expr", ""))
+
+    return jobs_raw, manim_code
+
+
+# --- pipeline ----------------------------------------------------------------
 
 def run_pipeline(doc: ProblemDoc) -> str:
-    """Run the end-to-end pipeline locally.
-
-    The function generates Manim code from ``doc`` using the codegen module,
-    optionally executes CAS jobs, and fills placeholders. When the code
-    generation step produces no CAS jobs, the intermediate code is returned
-    unchanged without calling the CAS or render steps.
     """
-
-    # Step 0: Graphsampling stage — persist inputs and build outputschema
+    End-to-end (로컬):
+      1) Graphsampling → outputschema.json
+      2) CodeGen → ManimCode + ---CAS-JOBS---
+      3) CAS 실행 → 결과
+      4) (필요시) placeholder 치환 → 최종 Manim 코드 저장 및 반환
+    """
+    # 0) 작업 디렉토리 구성
     output_root = Path("ManimcodeOutput")
     output_root.mkdir(exist_ok=True)
     problem_name = Path(doc.image_path).stem if doc.image_path else "local"
     problem_dir = output_root / problem_name
     problem_dir.mkdir(exist_ok=True)
 
-    # Save OCR JSON and copy image if available
-    input_json_path = problem_dir / "input.json"
-    with open(input_json_path, "w", encoding="utf-8") as f:
-        json.dump([i.dict() for i in doc.items], f, ensure_ascii=False, indent=2)
+    # 1) 그래프샘플링 (입력 보관 + outputschema.json 생성)
+    try:
+        print("[e2e] Writing input.json...", file=sys.stderr)
+        input_json_path = problem_dir / "input.json"
+        with open(input_json_path, "w", encoding="utf-8") as f:
+            json.dump([i.model_dump() for i in doc.items], f, ensure_ascii=False, indent=2)
 
-    if doc.image_path and os.path.isfile(doc.image_path):
-        dst_image_path = problem_dir / Path(doc.image_path).name
-        try:
-            shutil.copy(doc.image_path, dst_image_path)
-        except Exception:
-            pass
+        image_paths: List[str] = []
+        if doc.image_path and os.path.isfile(doc.image_path):
+            dst_image_path = problem_dir / Path(doc.image_path).name
+            try:
+                shutil.copy(doc.image_path, dst_image_path)
+                image_paths.append(str(dst_image_path))
+            except Exception:
+                pass
 
-    outputschema_path = problem_dir / "outputschema.json"
-    build_outputschema(str(problem_dir), str(outputschema_path), args=None)
+        print("[e2e] Building outputschema.json...", file=sys.stderr)
+        outputschema_path = problem_dir / "outputschema.json"
+        build_outputschema(str(problem_dir), str(outputschema_path), args=None)
 
-    # Proceed to codegen
-    cg = generate_manim(doc)
+    except Exception as e:
+        print(f"[ERROR] GraphSampling failed: {e}", file=sys.stderr)
+        print(traceback.format_exc(), file=sys.stderr)
+        sys.exit(1)
 
-    # If there are no CAS jobs we can return the draft code immediately.
-    if not cg.cas_jobs:
-        return cg.manim_code_draft
+    # 2) CodeGen (outputschema + 이미지 리스트)
+    try:
+        print("[e2e] Running CodeGen...", file=sys.stderr)
+        code_text = run_codegen(str(outputschema_path), image_paths, str(problem_dir))
+        if not code_text or not code_text.strip():
+            print("[WARN] CodeGen produced empty code", file=sys.stderr)
+            return ""
+        print("[e2e] CodeGen OK", file=sys.stderr)
+    except Exception as e:
+        print(f"[ERROR] Code generation failed: {e}", file=sys.stderr)
+        print(traceback.format_exc(), file=sys.stderr)
+        sys.exit(1)
 
-    jobs: List[CASJob] = [CASJob(**j) for j in cg.cas_jobs]
-    cas_res = run_cas(jobs)
-    final = fill_placeholders(cg.manim_code_draft, cas_res)
-    return final.manim_code_final
+    # 3) CAS-JOBS 추출 → CAS 실행
+    try:
+        jobs_raw, manim_code_draft = _extract_jobs_and_code(code_text)
+        print(f"[e2e] Resolving and running CAS on {len(jobs_raw)} job(s)...", file=sys.stderr)
+        cas_res = _resolve_and_run_cas(jobs_raw)
+        print("[e2e] CAS OK", file=sys.stderr)
+    except Exception as e:
+        print(f"[ERROR] CAS computation failed: {e}", file=sys.stderr)
+        print(traceback.format_exc(), file=sys.stderr)
+        # CAS 실패해도 Manim 초안만 저장하도록 하려면 return 을 바꾸면 됨
+        sys.exit(1)
 
+    # 4) (옵션) placeholder 치환 → 최종 코드 저장
+    try:
+        # 현재 출력은 placeholder가 없으므로 그대로 통과(안전 호출)
+        final = fill_placeholders(manim_code_draft, cas_res)
+        manim_final = final.manim_code_final.strip()
+
+        out_py = problem_dir / f"{problem_name}.py"
+        with open(out_py, "w", encoding="utf-8") as f:
+            f.write(manim_final)
+
+        print(f"[e2e] Saved Manim code -> {out_py}", file=sys.stderr)
+        return manim_final
+
+    except Exception as e:
+        print(f"[ERROR] Final render/save failed: {e}", file=sys.stderr)
+        print(traceback.format_exc(), file=sys.stderr)
+        sys.exit(1)
+
+
+# --- cli ---------------------------------------------------------------------
 
 if __name__ == "__main__":
+    if len(sys.argv) < 3:
+        print("Usage: python -m pipelines.e2e <image_path> <json_path>", file=sys.stderr)
+        sys.exit(2)
+
     img = sys.argv[1]
     js = sys.argv[2]
-    items = json.load(open(js, "r", encoding="utf-8"))
-    doc = ProblemDoc(items=items, image_path=img)
-    code = run_pipeline(doc)
-    print(code.strip())
+    try:
+        items = json.load(open(js, "r", encoding="utf-8"))
+        doc = ProblemDoc(items=items, image_path=img)
+        code = run_pipeline(doc)
+        if code is None:
+            print("[WARN] No code produced (None)", file=sys.stderr)
+            sys.exit(1)
+        if not code.strip():
+            print("[WARN] Empty code produced", file=sys.stderr)
+        print(code)
+    except Exception as e:
+        print(f"[ERROR] e2e main failed: {e}", file=sys.stderr)
+        print(traceback.format_exc(), file=sys.stderr)
+        sys.exit(1)
