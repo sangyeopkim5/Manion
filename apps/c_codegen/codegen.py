@@ -11,7 +11,7 @@ from dotenv import load_dotenv
 # 환경설정
 # ==============================
 BASE_DIR = Path(__file__).resolve().parent
-CONFIG_DIR = BASE_DIR / "configs"
+CONFIG_DIR = BASE_DIR.parent.parent / "configs"
 SYSTEM_PROMPT_PATH = BASE_DIR / "system_prompt.txt"
 
 # .env 로드 (OPENAI_API_KEY 설정)
