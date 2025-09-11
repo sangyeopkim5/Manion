@@ -11,10 +11,11 @@ import shutil
 from dotenv import load_dotenv
 
 from libs.schemas import ProblemDoc, CASJob
-from apps.graphsampling.builder import build_outputschema
-from apps.codegen.codegen import run_codegen
-from apps.cas.compute import run_cas
-from apps.render.fill import fill_placeholders
+from apps.b_graphsampling.builder import build_outputschema
+from apps.c_codegen.codegen import run_codegen
+from apps.d_cas.compute import run_cas
+from apps.e_render.fill import fill_placeholders
+from apps.a_ocr.dots_ocr.parser import DotsOCRParser
 
 load_dotenv()
 
@@ -245,6 +246,27 @@ def e2e(doc: ProblemDoc):
     Graphsampling → CodeGen → CAS → [[CAS:id]] 치환 → ManimCode 저장
     """
     return generate_endpoint(doc)
+
+@app.post("/e2e_with_ocr")
+def e2e_with_ocr(image_path: str, problem_name: str = None):
+    """
+    OCR + End-to-End 실행:
+    OCR → Graphsampling → CodeGen → CAS → [[CAS:id]] 치환 → ManimCode 저장
+    """
+    try:
+        from pipelines.e2e import run_pipeline_with_ocr
+        
+        # 통합 파이프라인 실행
+        result = run_pipeline_with_ocr(image_path, problem_name)
+        
+        return {
+            "status": "ok",
+            "message": "OCR + E2E pipeline completed successfully",
+            "result": result
+        }
+        
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
 
 @app.get("/")
 def read_root():

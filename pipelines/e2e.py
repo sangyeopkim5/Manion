@@ -8,11 +8,16 @@ from types import SimpleNamespace
 from pathlib import Path
 from typing import List, Dict
 
+# 프로젝트 루트를 Python 경로에 추가
+project_root = Path(__file__).parent.parent
+sys.path.insert(0, str(project_root))
+
 from libs.schemas import ProblemDoc, CASJob, CASResult
-from apps.graphsampling.builder import build_outputschema
-from apps.codegen.codegen import run_codegen
-from apps.cas.compute import run_cas           # CAS 실행 (Sympy)  ← uses target_expr/task  :contentReference[oaicite:2]{index=2}
-from apps.render.fill import fill_placeholders  # Placeholder 치환(없으면 원본 반환)       :contentReference[oaicite:3]{index=3}
+from apps.b_graphsampling.builder import build_outputschema
+from apps.c_codegen.codegen import run_codegen
+from apps.d_cas.compute import run_cas
+from apps.e_render.fill import fill_placeholders
+from apps.a_ocr.dots_ocr.parser import DotsOCRParser
 
 
 # --- helpers -----------------------------------------------------------------
@@ -190,13 +195,129 @@ def _extract_jobs_and_code(code_text: str):
 
 # --- pipeline ----------------------------------------------------------------
 
+def run_pipeline_with_ocr(image_path: str, problem_name: str = None) -> str:
+    """
+    OCR + End-to-end (로컬):
+      1) OCR 처리 → JSON + 이미지
+      2) Graphsampling → outputschema.json  
+      3) CodeGen → ManimCode + ---CAS-JOBS---
+      4) CAS 실행 → 결과
+      5) placeholder 치환 → 최종 Manim 코드 저장 및 반환
+    """
+    if problem_name is None:
+        problem_name = Path(image_path).stem
+    
+    # 0) 작업 디렉토리 구성
+    output_root = Path("ManimcodeOutput")
+    output_root.mkdir(exist_ok=True)
+    problem_dir = output_root / problem_name
+    problem_dir.mkdir(exist_ok=True)
+
+    # 1) OCR 처리
+    try:
+        print(f"[e2e] Running OCR on: {image_path}", file=sys.stderr)
+        ocr_parser = DotsOCRParser()
+        ocr_results = ocr_parser.parse_file(
+            input_path=image_path,
+            output_dir=f"./temp_ocr_output/{problem_name}",
+            prompt_mode="prompt_layout_all_en"
+        )
+        
+        # OCR 결과에서 JSON과 이미지 경로 추출
+        ocr_output_dir = f"./temp_ocr_output/{problem_name}/{problem_name}"
+        json_files = [f for f in os.listdir(ocr_output_dir) if f.endswith('.json')]
+        image_files = [f for f in os.listdir(ocr_output_dir) if f.endswith(('.jpg', '.png'))]
+        
+        if not json_files:
+            raise FileNotFoundError("No JSON file found in OCR output")
+        
+        # OCR JSON을 problem_dir로 복사
+        ocr_json_path = os.path.join(ocr_output_dir, json_files[0])
+        dst_json_path = problem_dir / f"{problem_name}.json"
+        shutil.copy2(ocr_json_path, dst_json_path)
+        
+        # OCR 이미지를 problem_dir로 복사
+        if image_files:
+            ocr_image_path = os.path.join(ocr_output_dir, image_files[0])
+            dst_image_path = problem_dir / f"{problem_name}.jpg"
+            shutil.copy2(ocr_image_path, dst_image_path)
+            image_paths = [str(dst_image_path)]
+        else:
+            image_paths = []
+
+    except Exception as e:
+        print(f"[ERROR] OCR failed: {e}", file=sys.stderr)
+        print(traceback.format_exc(), file=sys.stderr)
+        sys.exit(1)
+
+    # 2) 그래프샘플링 (OCR 결과를 직접 사용)
+    try:
+        print("[e2e] Building outputschema.json (emit_anchors=True)...", file=sys.stderr)
+        outputschema_path = problem_dir / "outputschema.json"
+        args = SimpleNamespace(
+            emit_anchors=True,
+            frame="14x8",
+            dpi=300,
+            vectorizer="potrace",
+            points_per_path=600,
+            only_picture=False,
+        )
+        build_outputschema(str(problem_dir), str(outputschema_path), args=args)
+
+    except Exception as e:
+        print(f"[ERROR] GraphSampling failed: {e}", file=sys.stderr)
+        print(traceback.format_exc(), file=sys.stderr)
+        sys.exit(1)
+
+    # 3) CodeGen (outputschema + 이미지 리스트)
+    try:
+        print("[e2e] Running CodeGen...", file=sys.stderr)
+        code_text = run_codegen(str(outputschema_path), image_paths, str(problem_dir))
+        if not code_text or not code_text.strip():
+            print("[WARN] CodeGen produced empty code", file=sys.stderr)
+            return ""
+        print("[e2e] CodeGen OK", file=sys.stderr)
+    except Exception as e:
+        print(f"[ERROR] Code generation failed: {e}", file=sys.stderr)
+        print(traceback.format_exc(), file=sys.stderr)
+        sys.exit(1)
+
+    # 4) CAS-JOBS 추출 → CAS 실행
+    try:
+        jobs_raw, manim_code_draft = _extract_jobs_and_code(code_text)
+        print(f"[e2e] Resolving and running CAS on {len(jobs_raw)} job(s)...", file=sys.stderr)
+        cas_res = _resolve_and_run_cas(jobs_raw)
+        print("[e2e] CAS OK", file=sys.stderr)
+    except Exception as e:
+        print(f"[ERROR] CAS computation failed: {e}", file=sys.stderr)
+        print(traceback.format_exc(), file=sys.stderr)
+        sys.exit(1)
+
+    # 5) placeholder 치환 → 최종 코드 저장
+    try:
+        final = fill_placeholders(manim_code_draft, cas_res)
+        manim_final = final.manim_code_final.strip()
+
+        out_py = problem_dir / f"{problem_name}.py"
+        with open(out_py, "w", encoding="utf-8") as f:
+            f.write(manim_final)
+
+        print(f"[e2e] Saved Manim code -> {out_py}", file=sys.stderr)
+        return manim_final
+
+    except Exception as e:
+        print(f"[ERROR] Final render/save failed: {e}", file=sys.stderr)
+        print(traceback.format_exc(), file=sys.stderr)
+        sys.exit(1)
+
+
 def run_pipeline(doc: ProblemDoc) -> str:
     """
-    End-to-end (로컬):
+    기존 End-to-end (로컬):
       1) Graphsampling → outputschema.json
       2) CodeGen → ManimCode + ---CAS-JOBS---
       3) CAS 실행 → 결과
-      4) (필요시) placeholder 치환 → 최종 Manim 코드 저장 및 반환
+      4) placeholder 치환 → 최종 Manim 코드 저장 및 반환
     """
     # 0) 작업 디렉토리 구성
     output_root = Path("ManimcodeOutput")
@@ -260,12 +381,10 @@ def run_pipeline(doc: ProblemDoc) -> str:
     except Exception as e:
         print(f"[ERROR] CAS computation failed: {e}", file=sys.stderr)
         print(traceback.format_exc(), file=sys.stderr)
-        # CAS 실패해도 Manim 초안만 저장하도록 하려면 return 을 바꾸면 됨
         sys.exit(1)
 
-    # 4) (옵션) placeholder 치환 → 최종 코드 저장
+    # 4) placeholder 치환 → 최종 코드 저장
     try:
-        # 현재 출력은 placeholder가 없으므로 그대로 통과(안전 호출)
         final = fill_placeholders(manim_code_draft, cas_res)
         manim_final = final.manim_code_final.strip()
 
@@ -285,23 +404,43 @@ def run_pipeline(doc: ProblemDoc) -> str:
 # --- cli ---------------------------------------------------------------------
 
 if __name__ == "__main__":
-    if len(sys.argv) < 3:
-        print("Usage: python -m pipelines.e2e <image_path> <json_path>", file=sys.stderr)
+    if len(sys.argv) < 2:
+        print("Usage: python -m pipelines.e2e <image_path> [problem_name]", file=sys.stderr)
+        print("       python -m pipelines.e2e <image_path> <json_path>  # 기존 방식", file=sys.stderr)
         sys.exit(2)
 
     img = sys.argv[1]
-    js = sys.argv[2]
-    try:
-        items = json.load(open(js, "r", encoding="utf-8"))
-        doc = ProblemDoc(items=items, image_path=img)
-        code = run_pipeline(doc)
-        if code is None:
-            print("[WARN] No code produced (None)", file=sys.stderr)
+    
+    # 새로운 OCR 방식 (이미지만 입력)
+    if len(sys.argv) == 2 or (len(sys.argv) == 3 and not sys.argv[2].endswith('.json')):
+        problem_name = sys.argv[2] if len(sys.argv) == 3 else None
+        try:
+            code = run_pipeline_with_ocr(img, problem_name)
+            if code is None:
+                print("[WARN] No code produced (None)", file=sys.stderr)
+                sys.exit(1)
+            if not code.strip():
+                print("[WARN] Empty code produced", file=sys.stderr)
+            print(code)
+        except Exception as e:
+            print(f"[ERROR] e2e with OCR failed: {e}", file=sys.stderr)
+            print(traceback.format_exc(), file=sys.stderr)
             sys.exit(1)
-        if not code.strip():
-            print("[WARN] Empty code produced", file=sys.stderr)
-        print(code)
-    except Exception as e:
-        print(f"[ERROR] e2e main failed: {e}", file=sys.stderr)
-        print(traceback.format_exc(), file=sys.stderr)
-        sys.exit(1)
+    
+    # 기존 방식 (이미지 + JSON)
+    else:
+        js = sys.argv[2]
+        try:
+            items = json.load(open(js, "r", encoding="utf-8"))
+            doc = ProblemDoc(items=items, image_path=img)
+            code = run_pipeline(doc)
+            if code is None:
+                print("[WARN] No code produced (None)", file=sys.stderr)
+                sys.exit(1)
+            if not code.strip():
+                print("[WARN] Empty code produced", file=sys.stderr)
+            print(code)
+        except Exception as e:
+            print(f"[ERROR] e2e main failed: {e}", file=sys.stderr)
+            print(traceback.format_exc(), file=sys.stderr)
+            sys.exit(1)
