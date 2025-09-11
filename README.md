@@ -80,19 +80,19 @@ python -m pipelines.e2e `
 
 🧩 단계별 실행 (디버깅)
 # 1단계 OCR
-python -m pipelines.cli_stage --stage 1 --image ".\Probleminput\sample1\sample1.jpg"
+python -m pipelines.cli_stage --stage 1 --image-path "./Probleminput/sample1/sample1.jpg"
 
 # 2단계 GraphSampling
-python -m pipelines.cli_stage --stage 2 --dir ".\Probleminput\sample1"
+python -m pipelines.cli_stage --stage 2 --problem-dir "./Probleminput/sample1"
 
 # 3단계 CodeGen
-python -m pipelines.cli_stage --stage 3 --schema ".\Probleminput\sample1\outputschema.json"
+python -m pipelines.cli_stage --stage 3 --outputschema-path "./Probleminput/sample1/outputschema.json" --image-paths "./Probleminput/sample1/sample1.jpg" --output-dir "./Probleminput/sample1"
 
 # 4단계 CAS
-python -m pipelines.cli_stage --stage 4 --cas ".\Probleminput\sample1\cas_jobs.json"
+python -m pipelines.cli_stage --stage 4 --code-text "$(cat ./Probleminput/sample1/codegen_output.py)"
 
 # 5단계 Render
-python -m pipelines.cli_stage --stage 5 --code ".\Probleminput\sample1\manim_draft.py" --casres ".\Probleminput\sample1\cas_results.json"
+python -m pipelines.cli_stage --stage 5 --manim-code "$(cat ./Probleminput/sample1/manim_draft.py)" --cas-results "./Probleminput/sample1/cas_results.json" --output-path "./Probleminput/sample1/final.py"
 
 🌐 서버 실행 (옵션)
 
