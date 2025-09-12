@@ -104,16 +104,19 @@ echo "OPENAI_API_KEY=your_api_key_here" > .env
 **1) 전체 파이프라인 (OCR부터) - 새로운 조건부 처리**
 
 ```powershell
+# 기본 예제 (간단한 문제명)
+python -m pipelines.cli_e2e Manion/Probleminput/1.png --problem-name "1"
+
 # Picture가 있는 경우 (경로 2)
-python pipelines\cli_e2e.py Probleminput\중1-2도형\중1-2도형.jpg --problem-name "중1-2도형"
+python -m pipelines.cli_e2e Manion/Probleminput/중1-2도형/중1-2도형.png --problem-name "중1-2도형"
 
 # Picture가 없는 경우 (경로 1)  
-python pipelines\cli_e2e.py Probleminput\중3-1사다리꼴넓이\중3-1사다리꼴넓이.jpg --problem-name "중3-1사다리꼴넓이"
+python -m pipelines.cli_e2e Manion/Probleminput/중3-1사다리꼴넓이/중3-1사다리꼴넓이.jpg --problem-name "중3-1사다리꼴넓이"
 ```
 
 **2) OCR은 이미 끝난 경우 (JSON 동봉)**
 ```powershell
-python -m pipelines.e2e ".\Probleminput\sample1\sample1.jpg" ".\Probleminput\sample1\sample1.json"
+python -m pipelines.cli_e2e Manion/Probleminput/1.png Manion/Probleminput/1.json
 ```
 
 **3) 서버로 테스트**
@@ -122,45 +125,63 @@ python -m pipelines.e2e ".\Probleminput\sample1\sample1.jpg" ".\Probleminput\sam
 python server.py
 
 # 다른 터미널에서 API 호출
-curl -X POST "http://localhost:8000/e2e_with_ocr" -H "Content-Type: application/json" -d "{\"image_path\": \"Probleminput/중1-2도형/중1-2도형.jpg\", \"problem_name\": \"중1-2도형\"}"
+curl -X POST "http://localhost:8000/e2e_with_ocr" -H "Content-Type: application/json" -d "{\"image_path\": \"Manion/Probleminput/1.png\", \"problem_name\": \"1\"}"
 ```
 
 🧩 단계별 실행 (디버깅)
 
+**기본 예제 (간단한 문제명)**
+```powershell
+# 1단계 OCR
+python -m pipelines.cli_stage 1 --image-path "Manion/Probleminput/1.png" --problem-name "1"
+
+# 2단계 GraphSampling (조건부 실행)
+python -m pipelines.cli_stage 2 --problem-dir "./temp_ocr_output/1/1"
+
+# 3단계 CodeGen
+python -m pipelines.cli_stage 3 --outputschema-path "outputschema.json" --image-paths "image.jpg" --output-dir "."
+
+# 4단계 CAS
+python -m pipelines.cli_stage 4 --code-text "$(Get-Content codegen_output.py)"
+
+# 5단계 Render
+python -m pipelines.cli_stage 5 --manim-code "$(Get-Content manim_draft.py)" --cas-results "cas_results.json" --output-path "final.py"
+```
+
 **Picture가 있는 경우 (경로 2)**
 ```powershell
 # 1단계 OCR
-python pipelines\cli_stage.py 1 Probleminput\중1-2도형\중1-2도형.jpg
+python -m pipelines.cli_stage 1 --image-path "Manion/Probleminput/중1-2도형/중1-2도형.jpg" --problem-name "중1-2도형"
 
 # 2단계 GraphSampling (조건부 실행)
-python pipelines\cli_stage.py 2 ManimcodeOutput\중1-2도형
+python -m pipelines.cli_stage 2 --problem-dir "./temp_ocr_output/중1-2도형/중1-2도형"
 
 # 3단계 CodeGen (b_graphsampling + crop 이미지들)
-python pipelines\cli_stage.py 3 ManimcodeOutput\중1-2도형\outputschema.json
+python -m pipelines.cli_stage 3 --outputschema-path "outputschema.json" --image-paths "image.jpg" --output-dir "."
 
 # 4단계 CAS
-python pipelines\cli_stage.py 4 "$(Get-Content ManimcodeOutput\중1-2도형\codegen_output.py)"
+python -m pipelines.cli_stage 4 --code-text "$(Get-Content codegen_output.py)"
 
 # 5단계 Render
-python pipelines\cli_stage.py 5 "$(Get-Content ManimcodeOutput\중1-2도형\manim_draft.py)" ManimcodeOutput\중1-2도형\cas_results.json ManimcodeOutput\중1-2도형\final.py
+python -m pipelines.cli_stage 5 --manim-code "$(Get-Content manim_draft.py)" --cas-results "cas_results.json" --output-path "final.py"
 ```
 
 **Picture가 없는 경우 (경로 1)**
 ```powershell
 # 1단계 OCR
-python pipelines\cli_stage.py 1 Probleminput\중3-1사다리꼴넓이\중3-1사다리꼴넓이.jpg
+python -m pipelines.cli_stage 1 --image-path "Manion/Probleminput/중3-1사다리꼴넓이/중3-1사다리꼴넓이.jpg" --problem-name "중3-1사다리꼴넓이"
 
 # 2단계 GraphSampling (스킵됨)
-python pipelines\cli_stage.py 2 ManimcodeOutput\중3-1사다리꼴넓이
+python -m pipelines.cli_stage 2 --problem-dir "./temp_ocr_output/중3-1사다리꼴넓이/중3-1사다리꼴넓이"
 
 # 3단계 CodeGen (a_ocr JSON 직접 전달)
-python pipelines\cli_stage.py 3 ManimcodeOutput\중3-1사다리꼴넓이\outputschema.json
+python -m pipelines.cli_stage 3 --outputschema-path "outputschema.json" --image-paths "image.jpg" --output-dir "."
 
 # 4단계 CAS
-python pipelines\cli_stage.py 4 "$(Get-Content ManimcodeOutput\중3-1사다리꼴넓이\codegen_output.py)"
+python -m pipelines.cli_stage 4 --code-text "$(Get-Content codegen_output.py)"
 
 # 5단계 Render
-python pipelines\cli_stage.py 5 "$(Get-Content ManimcodeOutput\중3-1사다리꼴넓이\manim_draft.py)" ManimcodeOutput\중3-1사다리꼴넓이\cas_results.json ManimcodeOutput\중3-1사다리꼴넓이\final.py
+python -m pipelines.cli_stage 5 --manim-code "$(Get-Content manim_draft.py)" --cas-results "cas_results.json" --output-path "final.py"
 ```
 
 🌐 서버 실행 (옵션)
@@ -186,26 +207,33 @@ configs/render.toml : 치환 정책, 출력 경로
 📁 결과 확인 위치
 
 ```
-ManimcodeOutput/
+temp_ocr_output/
+├── 1/                           # 기본 예제 (간단한 문제명)
+│   ├── 1.json                   # OCR 결과
+│   ├── 1.jpg                    # OCR 시각화
+│   ├── outputschema.json        # b_graphsampling 결과 (조건부)
+│   ├── codegen_output.py        # CodeGen 결과
+│   └── final.py                 # 최종 Manim 코드
+│
 ├── 중1-2도형/                    # Picture가 있는 경우
 │   ├── 중1-2도형.json            # OCR 결과
 │   ├── 중1-2도형.jpg             # OCR 시각화
 │   ├── outputschema.json         # b_graphsampling 결과
 │   ├── 중1-2도형__pic_i0_outputschema.json  # crop 이미지 outputschema
 │   ├── codegen_output.py         # CodeGen 결과
-│   └── 중1-2도형_final.py        # 최종 Manim 코드
+│   └── final.py                  # 최종 Manim 코드
 │
 └── 중3-1사다리꼴넓이/              # Picture가 없는 경우
     ├── 중3-1사다리꼴넓이.json      # OCR 결과
     ├── 중3-1사다리꼴넓이.jpg       # OCR 시각화
     ├── outputschema.json         # 빈 outputschema (b_graphsampling 스킵)
     ├── codegen_output.py         # CodeGen 결과 (a_ocr JSON 직접 사용)
-    └── 중3-1사다리꼴넓이_final.py  # 최종 Manim 코드
+    └── final.py                  # 최종 Manim 코드
 ```
 
 🛠 체크리스트
 
-- [ ] Probleminput/<문제명>에 이미지 존재?
+- [ ] Manion/Probleminput/<문제명>에 이미지 존재?
 - [ ] OCR 결과에서 Picture 블록 확인?
 - [ ] Picture 있음: b_graphsampling + crop 이미지들 처리됨?
 - [ ] Picture 없음: b_graphsampling 스킵됨?
@@ -215,16 +243,19 @@ ManimcodeOutput/
 
 🧠 권장 워크플로우
 
-1. **Probleminput/에 문제 이미지 저장**
+1. **Manion/Probleminput/에 문제 이미지 저장**
 2. **조건부 파이프라인 실행**:
    ```powershell
-   # Picture가 없없는 경우
-   python pipelines\cli_e2e.py Probleminput\중1-2도형\중1-2도형.jpg --problem-name "중1-2도형"
+   # 기본 예제 (간단한 문제명)
+   python -m pipelines.cli_e2e Manion/Probleminput/1.png --problem-name "1"
    
    # Picture가 있는 경우
-   python pipelines\cli_e2e.py Probleminput\중3-1사다리꼴넓이\중3-1사다리꼴넓이.jpg --problem-name "중3-1사다리꼴넓이"
+   python -m pipelines.cli_e2e Manion/Probleminput/중1-2도형/중1-2도형.jpg --problem-name "중1-2도형"
+   
+   # Picture가 없는 경우
+   python -m pipelines.cli_e2e Manion/Probleminput/중3-1사다리꼴넓이/중3-1사다리꼴넓이.jpg --problem-name "중3-1사다리꼴넓이"
    ```
-3. **결과 확인**: ManimcodeOutput/<문제명>/ 디렉토리에서 outputschema.json 및 최종 <문제명>.py 확인
+3. **결과 확인**: `./temp_ocr_output/<문제명>/` 디렉토리에서 outputschema.json 및 최종 결과 확인
 4. **디버깅**: 필요시 단계별 실행으로 디버깅
 
 🎯 **예상 로그 메시지**

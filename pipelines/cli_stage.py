@@ -24,10 +24,10 @@ def main():
         epilog="""
 Examples:
   # Stage 1: OCR 처리
-  python -m pipelines.cli_stage 1 --image-path input.jpg --problem-name "중1-2도형"
+  python -m pipelines.cli_stage 1 --image-path "Manion/Probleminput/1.png" --problem-name "1"
   
   # Stage 2: GraphSampling 처리
-  python -m pipelines.cli_stage 2 --problem-dir "./temp_ocr_output/중1-2도형/중1-2도형"
+  python -m pipelines.cli_stage 2 --problem-dir "./temp_ocr_output/1/1"
   
   # Stage 3: CodeGen 처리
   python -m pipelines.cli_stage 3 --outputschema-path "outputschema.json" --image-paths "image.jpg" --output-dir "."

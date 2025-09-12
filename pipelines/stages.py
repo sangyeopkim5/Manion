@@ -16,6 +16,7 @@ sys.path.insert(0, str(project_root))
 
 from libs.schemas import ProblemDoc, CASJob, CASResult
 from apps.a_ocr.dots_ocr.parser import DotsOCRParser
+from apps.a_ocr.tools.picture_ocr_pipeline import run_pipeline as run_picture_ocr_pipeline
 from apps.b_graphsampling.builder import build_outputschema
 from apps.c_codegen.codegen import run_codegen
 from apps.d_cas.compute import run_cas
@@ -41,11 +42,10 @@ def stage1_ocr(image_path: str, output_dir: str = "./temp_ocr_output", problem_n
     print(f"[Stage 1] Running OCR on: {image_path}")
     
     try:
-        ocr_parser = DotsOCRParser()
-        ocr_results = ocr_parser.parse_file(
-            input_path=image_path,
-            output_dir=output_dir,
-            prompt_mode="prompt_layout_all_en"
+        ocr_parser = DotsOCRParser(output_dir=output_dir)
+        ocr_results = run_picture_ocr_pipeline(
+            parser=ocr_parser,
+            input_path=image_path
         )
         
         ocr_output_dir = f"{output_dir}/{problem_name}/{problem_name}"
@@ -104,44 +104,9 @@ def stage2_graphsampling(problem_dir: str, output_path: str = None) -> str:
                 only_picture=False,
             )
             
-            # 메인 outputschema 생성
+            # b_graphsampling: 기존 JSON에 vector_anchors 추가
             build_outputschema(problem_dir, output_path, args=args)
-            print(f"[Stage 2] GraphSampling completed. Output: {output_path}")
-            
-            # crop된 이미지들에 대해서도 그래프샘플링 수행
-            crop_image_files = [f for f in os.listdir(problem_dir_path) if f.endswith('.jpg') and '__pic_i' in f]
-            
-            if crop_image_files:
-                print(f"[Stage 2] Found {len(crop_image_files)} crop images, processing with GraphSampling...")
-                
-                for crop_file in crop_image_files:
-                    crop_name = Path(crop_file).stem  # 예: "중1-2도형__pic_i0"
-                    crop_outputschema_path = problem_dir_path / f"{crop_name}_outputschema.json"
-                    
-                    # crop 이미지를 위한 임시 디렉토리 생성
-                    crop_temp_dir = problem_dir_path / f"temp_{crop_name}"
-                    crop_temp_dir.mkdir(exist_ok=True)
-                    
-                    # crop 이미지를 임시 디렉토리로 복사
-                    src_crop_path = problem_dir_path / crop_file
-                    temp_crop_path = crop_temp_dir / f"{crop_name}.jpg"
-                    shutil.copy2(src_crop_path, temp_crop_path)
-                    
-                    # 해당 crop에 대한 JSON이 있는지 확인하고 복사
-                    crop_json_name = f"{crop_name}.json"
-                    src_crop_json = problem_dir_path / crop_json_name
-                    if src_crop_json.exists():
-                        dst_crop_json = crop_temp_dir / f"{crop_name}.json"
-                        shutil.copy2(src_crop_json, dst_crop_json)
-                    
-                    try:
-                        build_outputschema(str(crop_temp_dir), str(crop_outputschema_path), args=args)
-                        print(f"[Stage 2] Crop outputschema created: {crop_outputschema_path}")
-                    except Exception as crop_e:
-                        print(f"[Stage 2] WARN: Failed to create outputschema for crop {crop_name}: {crop_e}")
-                    finally:
-                        # 임시 디렉토리 정리
-                        shutil.rmtree(crop_temp_dir, ignore_errors=True)
+            print(f"[Stage 2] GraphSampling completed. Vector anchors added to original JSON.")
         else:
             print(f"[Stage 2] No Picture blocks detected - skipping b_graphsampling")
             # Picture가 없는 경우: 빈 outputschema 파일 생성
@@ -178,7 +143,8 @@ def stage3_codegen(outputschema_path: str, image_paths: List[str], output_dir: s
             problem_name = output_dir_path.name
             ocr_json_path = str(output_dir_path / f"{problem_name}.json")
         
-        code_text = run_codegen(outputschema_path, image_paths, output_dir, ocr_json_path)
+        # b_graphsampling에서 1.json에 vector_anchors를 추가했으므로, 1.json을 직접 사용
+        code_text = run_codegen(ocr_json_path, image_paths, output_dir, ocr_json_path)
         if not code_text or not code_text.strip():
             raise ValueError("CodeGen produced empty code")
         

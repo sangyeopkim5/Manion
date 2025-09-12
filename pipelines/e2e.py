@@ -18,6 +18,7 @@ from apps.c_codegen.codegen import run_codegen
 from apps.d_cas.compute import run_cas
 from apps.e_render.fill import fill_placeholders
 from apps.a_ocr.dots_ocr.parser import DotsOCRParser
+from apps.a_ocr.tools.picture_ocr_pipeline import run_pipeline as run_picture_ocr_pipeline
 
 
 # --- helpers -----------------------------------------------------------------
@@ -213,14 +214,13 @@ def run_pipeline_with_ocr(image_path: str, problem_name: str = None) -> str:
     problem_dir = output_root / problem_name
     problem_dir.mkdir(exist_ok=True)
 
-    # 1) OCR 처리
+    # 1) OCR 처리 (Picture 블록이 있으면 2번째 OCR도 실행)
     try:
         print(f"[e2e] Running OCR on: {image_path}", file=sys.stderr)
-        ocr_parser = DotsOCRParser()
-        ocr_results = ocr_parser.parse_file(
-            input_path=image_path,
-            output_dir=f"./temp_ocr_output/{problem_name}",
-            prompt_mode="prompt_layout_all_en"
+        ocr_parser = DotsOCRParser(output_dir=f"./temp_ocr_output/{problem_name}")
+        ocr_results = run_picture_ocr_pipeline(
+            parser=ocr_parser,
+            input_path=image_path
         )
         
         # OCR 결과에서 JSON과 이미지 경로 추출
@@ -247,6 +247,8 @@ def run_pipeline_with_ocr(image_path: str, problem_name: str = None) -> str:
         
         # crop된 이미지들도 복사 (picture-children이 있는 경우)
         crop_image_files = [f for f in os.listdir(ocr_output_dir) if f.endswith('.jpg') and '__pic_i' in f]
+        # 순서대로 정렬 (__pic_i0, __pic_i1, __pic_i2, ...)
+        crop_image_files.sort(key=lambda x: int(x.split("__pic_i")[1].split(".")[0]) if "__pic_i" in x else 0)
         crop_image_paths = []
         for crop_file in crop_image_files:
             src_crop_path = os.path.join(ocr_output_dir, crop_file)
@@ -279,38 +281,8 @@ def run_pipeline_with_ocr(image_path: str, problem_name: str = None) -> str:
                 points_per_path=600,
                 only_picture=False,
             )
+            # b_graphsampling: 기존 JSON에 vector_anchors 추가
             build_outputschema(str(problem_dir), str(outputschema_path), args=args)
-            
-            # crop된 이미지들에 대해서도 그래프샘플링 수행
-            if crop_image_paths:
-                print(f"[e2e] Building outputschema.json for {len(crop_image_paths)} crop images...", file=sys.stderr)
-                for crop_image_path in crop_image_paths:
-                    crop_name = Path(crop_image_path).stem  # 예: "중1-2도형__pic_i0"
-                    crop_outputschema_path = problem_dir / f"{crop_name}_outputschema.json"
-                    
-                    # crop 이미지를 위한 임시 디렉토리 생성
-                    crop_temp_dir = problem_dir / f"temp_{crop_name}"
-                    crop_temp_dir.mkdir(exist_ok=True)
-                    
-                    # crop 이미지를 임시 디렉토리로 복사
-                    temp_crop_path = crop_temp_dir / f"{crop_name}.jpg"
-                    shutil.copy2(crop_image_path, temp_crop_path)
-                    
-                    # 해당 crop에 대한 JSON이 있는지 확인하고 복사
-                    crop_json_name = f"{crop_name}.json"
-                    src_crop_json = Path(ocr_output_dir) / crop_json_name
-                    if src_crop_json.exists():
-                        dst_crop_json = crop_temp_dir / f"{crop_name}.json"
-                        shutil.copy2(src_crop_json, dst_crop_json)
-                    
-                    try:
-                        build_outputschema(str(crop_temp_dir), str(crop_outputschema_path), args=args)
-                        print(f"[e2e] Crop outputschema created: {crop_outputschema_path}", file=sys.stderr)
-                    except Exception as crop_e:
-                        print(f"[WARN] Failed to create outputschema for crop {crop_name}: {crop_e}", file=sys.stderr)
-                    finally:
-                        # 임시 디렉토리 정리
-                        shutil.rmtree(crop_temp_dir, ignore_errors=True)
         else:
             print("[e2e] No Picture blocks detected - skipping b_graphsampling", file=sys.stderr)
             # Picture가 없는 경우: b_graphsampling 스킵
@@ -327,7 +299,8 @@ def run_pipeline_with_ocr(image_path: str, problem_name: str = None) -> str:
     # 3) CodeGen (조건부: Picture 유무에 따라 다른 경로)
     try:
         print("[e2e] Running CodeGen...", file=sys.stderr)
-        code_text = run_codegen(str(outputschema_path), image_paths, str(problem_dir), str(dst_json_path))
+        # b_graphsampling에서 1.json에 vector_anchors를 추가했으므로, 1.json을 직접 사용
+        code_text = run_codegen(str(dst_json_path), image_paths, str(problem_dir), str(dst_json_path))
         if not code_text or not code_text.strip():
             print("[WARN] CodeGen produced empty code", file=sys.stderr)
             return ""

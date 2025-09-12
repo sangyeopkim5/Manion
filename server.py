@@ -212,6 +212,8 @@ def generate_endpoint(doc: ProblemDoc):
             
             # crop된 이미지들에 대해서도 그래프샘플링 수행
             crop_image_files = [f for f in os.listdir(problem_dir) if f.endswith('.jpg') and '__pic_i' in f]
+            # 순서대로 정렬 (__pic_i0, __pic_i1, __pic_i2, ...)
+            crop_image_files.sort(key=lambda x: int(x.split("__pic_i")[1].split(".")[0]) if "__pic_i" in x else 0)
             if crop_image_files:
                 print(f"[server] Found {len(crop_image_files)} crop images, processing with GraphSampling...")
                 
@@ -251,7 +253,8 @@ def generate_endpoint(doc: ProblemDoc):
                 json.dump({}, f)
 
         # CodeGen 실행 (조건부: Picture 유무에 따라 다른 경로)
-        code_text = run_codegen(str(outputschema_path), image_paths, str(problem_dir), str(ocr_json_path))
+        # b_graphsampling에서 1.json에 vector_anchors를 추가했으므로, 1.json을 직접 사용
+        code_text = run_codegen(str(ocr_json_path), image_paths, str(problem_dir), str(ocr_json_path))
 
         # CAS-JOBS + Manim 코드 분리
         jobs_raw, manim_code_draft = _extract_jobs_and_code(code_text)

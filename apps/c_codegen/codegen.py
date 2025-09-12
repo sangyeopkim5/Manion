@@ -86,7 +86,8 @@ def run_codegen(outputschema_path: str, image_paths: list[str], out_dir: str, oc
     if has_pictures:
         print("[CodeGen] Picture blocks detected - using b_graphsampling + crop images")
         # 경로 2: Picture가 있는 경우 - b_graphsampling 결과 + crop 이미지들
-        schema = json.load(open(outputschema_path, "r", encoding="utf-8"))
+        # outputschema_path 대신 ocr_json_path 사용 (1.json에 vector_anchors가 추가됨)
+        schema = json.load(open(ocr_json_path, "r", encoding="utf-8"))
         
         # crop 이미지들 찾기
         crop_image_paths = get_crop_image_paths(out_dir)
@@ -105,7 +106,7 @@ def run_codegen(outputschema_path: str, image_paths: list[str], out_dir: str, oc
         user_parts.append({
             "type": "text",
             "text": (
-                "아래는 LinearIR.v1 기반 outputschema.json과 crop된 이미지들이다.\n"
+                "아래는 문제의.json과 crop된 이미지들이다.\n"
                 "출력은 ---CAS-JOBS--- 섹션(JSON 배열)과 Manim Scene 코드 1개(Scene=ManimCode)만 포함하라.\n\n"
                 f"[outputschema.json]\n{json.dumps(schema, ensure_ascii=False, indent=2)}\n\n"
             ),

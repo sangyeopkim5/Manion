@@ -23,11 +23,11 @@ def main():
         epilog="""
 Examples:
   # OCR 방식 (이미지만 입력)
-  python -m pipelines.cli_e2e input.jpg
-  python -m pipelines.cli_e2e input.jpg --problem-name "중1-2도형"
+  python -m pipelines.cli_e2e Manion/Probleminput/1.png
+  python -m pipelines.cli_e2e Manion/Probleminput/1.png --problem-name "1"
   
   # 기존 방식 (이미지 + JSON)
-  python -m pipelines.cli_e2e input.jpg data.json
+  python -m pipelines.cli_e2e Manion/Probleminput/1.png Manion/Probleminput/1.json
         """
     )
     
