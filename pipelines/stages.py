@@ -59,8 +59,9 @@ def stage1_ocr(image_path: str, output_dir: str = "./temp_ocr_output", problem_n
 
 def stage2_graphsampling(problem_dir: str, output_path: str = None) -> str:
     """
-    Stage 2: GraphSampling 처리
-    OCR JSON을 LinearIR.v1 스키마로 변환
+    Stage 2: GraphSampling 처리 (조건부)
+    OCR JSON에서 Picture 블록이 있는지 확인 후 조건부로 실행
+    crop된 이미지들에 대해서도 그래프샘플링 수행
     
     Args:
         problem_dir: 문제 디렉토리 (JSON과 이미지 포함)
@@ -72,20 +73,81 @@ def stage2_graphsampling(problem_dir: str, output_path: str = None) -> str:
     if output_path is None:
         output_path = os.path.join(problem_dir, "outputschema.json")
     
-    print(f"[Stage 2] Building outputschema.json from: {problem_dir}")
+    print(f"[Stage 2] Checking Picture blocks in: {problem_dir}")
     
     try:
-        args = SimpleNamespace(
-            emit_anchors=True,
-            frame="14x8",
-            dpi=300,
-            vectorizer="potrace",
-            points_per_path=600,
-            only_picture=False,
-        )
+        # Picture 블록이 있는지 확인
+        from apps.c_codegen.codegen import has_picture_blocks
+        problem_dir_path = Path(problem_dir)
+        problem_name = problem_dir_path.name
+        ocr_json_path = problem_dir_path / f"{problem_name}.json"
         
-        build_outputschema(problem_dir, output_path, args=args)
-        print(f"[Stage 2] GraphSampling completed. Output: {output_path}")
+        if not ocr_json_path.exists():
+            # JSON 파일을 찾을 수 없으면 첫 번째 JSON 파일 사용
+            json_files = list(problem_dir_path.glob("*.json"))
+            if json_files:
+                ocr_json_path = json_files[0]
+            else:
+                raise FileNotFoundError(f"No JSON file found in {problem_dir}")
+        
+        has_pictures = has_picture_blocks(str(ocr_json_path))
+        
+        if has_pictures:
+            print(f"[Stage 2] Picture blocks detected - running b_graphsampling...")
+            # Picture가 있는 경우: b_graphsampling 실행
+            args = SimpleNamespace(
+                emit_anchors=True,
+                frame="14x8",
+                dpi=300,
+                vectorizer="potrace",
+                points_per_path=600,
+                only_picture=False,
+            )
+            
+            # 메인 outputschema 생성
+            build_outputschema(problem_dir, output_path, args=args)
+            print(f"[Stage 2] GraphSampling completed. Output: {output_path}")
+            
+            # crop된 이미지들에 대해서도 그래프샘플링 수행
+            crop_image_files = [f for f in os.listdir(problem_dir_path) if f.endswith('.jpg') and '__pic_i' in f]
+            
+            if crop_image_files:
+                print(f"[Stage 2] Found {len(crop_image_files)} crop images, processing with GraphSampling...")
+                
+                for crop_file in crop_image_files:
+                    crop_name = Path(crop_file).stem  # 예: "중1-2도형__pic_i0"
+                    crop_outputschema_path = problem_dir_path / f"{crop_name}_outputschema.json"
+                    
+                    # crop 이미지를 위한 임시 디렉토리 생성
+                    crop_temp_dir = problem_dir_path / f"temp_{crop_name}"
+                    crop_temp_dir.mkdir(exist_ok=True)
+                    
+                    # crop 이미지를 임시 디렉토리로 복사
+                    src_crop_path = problem_dir_path / crop_file
+                    temp_crop_path = crop_temp_dir / f"{crop_name}.jpg"
+                    shutil.copy2(src_crop_path, temp_crop_path)
+                    
+                    # 해당 crop에 대한 JSON이 있는지 확인하고 복사
+                    crop_json_name = f"{crop_name}.json"
+                    src_crop_json = problem_dir_path / crop_json_name
+                    if src_crop_json.exists():
+                        dst_crop_json = crop_temp_dir / f"{crop_name}.json"
+                        shutil.copy2(src_crop_json, dst_crop_json)
+                    
+                    try:
+                        build_outputschema(str(crop_temp_dir), str(crop_outputschema_path), args=args)
+                        print(f"[Stage 2] Crop outputschema created: {crop_outputschema_path}")
+                    except Exception as crop_e:
+                        print(f"[Stage 2] WARN: Failed to create outputschema for crop {crop_name}: {crop_e}")
+                    finally:
+                        # 임시 디렉토리 정리
+                        shutil.rmtree(crop_temp_dir, ignore_errors=True)
+        else:
+            print(f"[Stage 2] No Picture blocks detected - skipping b_graphsampling")
+            # Picture가 없는 경우: 빈 outputschema 파일 생성
+            with open(output_path, 'w', encoding='utf-8') as f:
+                json.dump({}, f)
+        
         return output_path
         
     except Exception as e:
@@ -93,15 +155,16 @@ def stage2_graphsampling(problem_dir: str, output_path: str = None) -> str:
         raise
 
 
-def stage3_codegen(outputschema_path: str, image_paths: List[str], output_dir: str) -> str:
+def stage3_codegen(outputschema_path: str, image_paths: List[str], output_dir: str, ocr_json_path: str = None) -> str:
     """
-    Stage 3: CodeGen 처리
-    outputschema.json과 이미지를 GPT에 전달하여 Manim 코드 생성
+    Stage 3: CodeGen 처리 (조건부)
+    Picture 유무에 따라 다른 경로로 GPT에 전달
     
     Args:
         outputschema_path: outputschema.json 경로
         image_paths: 이미지 경로 리스트
         output_dir: 출력 디렉토리
+        ocr_json_path: OCR JSON 경로 (선택사항)
         
     Returns:
         str: 생성된 코드 텍스트
@@ -109,7 +172,13 @@ def stage3_codegen(outputschema_path: str, image_paths: List[str], output_dir: s
     print(f"[Stage 3] Running CodeGen...")
     
     try:
-        code_text = run_codegen(outputschema_path, image_paths, output_dir)
+        # OCR JSON 경로가 제공되지 않으면 기본 경로에서 찾기
+        if not ocr_json_path:
+            output_dir_path = Path(output_dir)
+            problem_name = output_dir_path.name
+            ocr_json_path = str(output_dir_path / f"{problem_name}.json")
+        
+        code_text = run_codegen(outputschema_path, image_paths, output_dir, ocr_json_path)
         if not code_text or not code_text.strip():
             raise ValueError("CodeGen produced empty code")
         

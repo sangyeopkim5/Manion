@@ -181,20 +181,77 @@ def generate_endpoint(doc: ProblemDoc):
             except Exception:
                 pass
 
-        # outputschema 생성 (emit anchors)
-        outputschema_path = problem_dir / "outputschema.json"
-        args = SimpleNamespace(
-            emit_anchors=True,
-            frame="14x8",
-            dpi=300,
-            vectorizer="potrace",
-            points_per_path=600,
-            only_picture=False,
-        )
-        build_outputschema(str(problem_dir), str(outputschema_path), args=args)
+        # Picture 블록 확인 후 조건부 그래프샘플링
+        from apps.c_codegen.codegen import has_picture_blocks
+        problem_name = problem_dir.name
+        ocr_json_path = problem_dir / f"{problem_name}.json"
+        
+        if not ocr_json_path.exists():
+            # JSON 파일을 찾을 수 없으면 첫 번째 JSON 파일 사용
+            json_files = list(problem_dir.glob("*.json"))
+            if json_files:
+                ocr_json_path = json_files[0]
+            else:
+                raise FileNotFoundError(f"No JSON file found in {problem_dir}")
+        
+        has_pictures = has_picture_blocks(str(ocr_json_path))
+        
+        if has_pictures:
+            print("[server] Picture blocks detected - running b_graphsampling...")
+            # outputschema 생성 (emit anchors)
+            outputschema_path = problem_dir / "outputschema.json"
+            args = SimpleNamespace(
+                emit_anchors=True,
+                frame="14x8",
+                dpi=300,
+                vectorizer="potrace",
+                points_per_path=600,
+                only_picture=False,
+            )
+            build_outputschema(str(problem_dir), str(outputschema_path), args=args)
+            
+            # crop된 이미지들에 대해서도 그래프샘플링 수행
+            crop_image_files = [f for f in os.listdir(problem_dir) if f.endswith('.jpg') and '__pic_i' in f]
+            if crop_image_files:
+                print(f"[server] Found {len(crop_image_files)} crop images, processing with GraphSampling...")
+                
+                for crop_file in crop_image_files:
+                    crop_name = Path(crop_file).stem  # 예: "중1-2도형__pic_i0"
+                    crop_outputschema_path = problem_dir / f"{crop_name}_outputschema.json"
+                    
+                    # crop 이미지를 위한 임시 디렉토리 생성
+                    crop_temp_dir = problem_dir / f"temp_{crop_name}"
+                    crop_temp_dir.mkdir(exist_ok=True)
+                    
+                    # crop 이미지를 임시 디렉토리로 복사
+                    src_crop_path = problem_dir / crop_file
+                    temp_crop_path = crop_temp_dir / f"{crop_name}.jpg"
+                    shutil.copy2(src_crop_path, temp_crop_path)
+                    
+                    # 해당 crop에 대한 JSON이 있는지 확인하고 복사
+                    crop_json_name = f"{crop_name}.json"
+                    src_crop_json = problem_dir / crop_json_name
+                    if src_crop_json.exists():
+                        dst_crop_json = crop_temp_dir / f"{crop_name}.json"
+                        shutil.copy2(src_crop_json, dst_crop_json)
+                    
+                    try:
+                        build_outputschema(str(crop_temp_dir), str(crop_outputschema_path), args=args)
+                        print(f"[server] Crop outputschema created: {crop_outputschema_path}")
+                    except Exception as crop_e:
+                        print(f"[server] WARN: Failed to create outputschema for crop {crop_name}: {crop_e}")
+                    finally:
+                        # 임시 디렉토리 정리
+                        shutil.rmtree(crop_temp_dir, ignore_errors=True)
+        else:
+            print("[server] No Picture blocks detected - skipping b_graphsampling")
+            # Picture가 없는 경우: 빈 outputschema 파일 생성
+            outputschema_path = problem_dir / "outputschema.json"
+            with open(outputschema_path, 'w', encoding='utf-8') as f:
+                json.dump({}, f)
 
-        # CodeGen 실행
-        code_text = run_codegen(str(outputschema_path), image_paths, str(problem_dir))
+        # CodeGen 실행 (조건부: Picture 유무에 따라 다른 경로)
+        code_text = run_codegen(str(outputschema_path), image_paths, str(problem_dir), str(ocr_json_path))
 
         # CAS-JOBS + Manim 코드 분리
         jobs_raw, manim_code_draft = _extract_jobs_and_code(code_text)
