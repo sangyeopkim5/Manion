@@ -9,6 +9,7 @@ import shutil
 from pathlib import Path
 from types import SimpleNamespace
 from typing import List, Dict, Any, Optional
+import toml
 
 # 프로젝트 루트를 Python 경로에 추가
 project_root = Path(__file__).parent.parent
@@ -330,3 +331,74 @@ if __name__ == "__main__":
     except Exception as e:
         print(f"Stage {args.stage} failed: {e}")
         sys.exit(1)
+
+
+# --- postproc stage functions -----------------------------------------------
+
+def _load_postproc_conf() -> Dict[str, Any]:
+    try:
+        cfg = toml.load("configs/openai.toml").get("postproc", {})
+    except Exception:
+        cfg = {}
+    
+    # 환경변수 우선 적용
+    ov = os.environ.get("POSTPROC_ENABLED_OVERRIDE")
+    if ov == "1":
+        enabled = True
+    elif ov == "0":
+        enabled = False
+    else:
+        enabled = cfg.get("enabled", False)
+    
+    # 디폴트 (비활성화)
+    return {
+        "enabled": enabled,
+        "model": cfg.get("model", ""),
+        "base_url": cfg.get("base_url", ""),
+        "api_key": cfg.get("api_key", "EMPTY"),
+        "temperature": float(cfg.get("temperature", 0.2)),
+        "max_loops": int(cfg.get("max_loops", 3)),
+        "quality": cfg.get("quality", "-ql"),
+        "timeout_sec": int(cfg.get("timeout_sec", 30)),
+    }
+
+
+def run_postproc_stage(problem_name: str) -> Optional[Dict[str, Any]]:
+    """
+    문제별 폴더 구조:
+      ManimcodeOutput/<problem>/<problem>.py  (입력)
+    출력:
+      ManimcodeOutput/<problem>/final_manimcode.py
+      ManimcodeOutput/<problem>/<problem>.mp4
+      ManimcodeOutput/<problem>/proof.json
+    """
+    conf = _load_postproc_conf()
+    if not conf["enabled"]:
+        return None
+
+    from libs.postproc.postproc import postprocess_and_render, Config as PostCfg
+    from libs.postproc.llm_openai import OpenAICompatLLM
+
+    # 입력 파일 유효성 확인 (없으면 기존 파이프라인 건드리지 않도록 None 반환)
+    base_dir = os.path.join("ManimcodeOutput", problem_name)
+    input_py = os.path.join(base_dir, f"{problem_name}.py")
+    if not os.path.exists(input_py):
+        return None
+
+    llm = OpenAICompatLLM(
+        base_url=conf["base_url"],
+        api_key=conf["api_key"],
+        model=conf["model"],
+        system_prompt_path=None,
+        temperature=conf["temperature"],
+    )
+    code_path, video_path, proof = postprocess_and_render(
+        problem_name,
+        llm,
+        PostCfg(
+            max_loops=conf["max_loops"],
+            manim_quality=conf["quality"],
+            timeout_sec=conf["timeout_sec"],
+        ),
+    )
+    return {"code_path": code_path, "video_path": video_path, "proof": proof}

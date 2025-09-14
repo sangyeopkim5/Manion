@@ -1,7 +1,16 @@
 [models]
 codegen = "gpt-5"
+postproc = "Qwen/Qwen2.5-Coder-14B-Instruct-AWQ"
 
 [gen]
 temperature = 1
 max_tokens  = 4096
 
+[postproc]
+enabled     = true
+base_url = "http://127.0.0.1:8000/v1"  # vLLM API endpoint (로컬)
+api_key = "EMPTY"  # API key for authentication
+max_loops = 3
+temperature = 0.2
+quality     = "-ql"        # 빠른 시도
+timeout_sec = 40

@@ -19,6 +19,7 @@ from apps.d_cas.compute import run_cas
 from apps.e_render.fill import fill_placeholders
 from apps.a_ocr.dots_ocr.parser import DotsOCRParser
 from apps.a_ocr.tools.picture_ocr_pipeline import run_pipeline as run_picture_ocr_pipeline
+from pipelines.stages import run_postproc_stage
 
 
 # --- helpers -----------------------------------------------------------------
@@ -331,6 +332,14 @@ def run_pipeline_with_ocr(image_path: str, problem_name: str = None) -> str:
             f.write(manim_final)
 
         print(f"[e2e] Saved Manim code -> {out_py}", file=sys.stderr)
+        
+        # Postproc stage integration
+        res = run_postproc_stage(problem_name)
+        if res is not None:
+            # 원래 후속 렌더/검증 단계가 있다면, 여기서 res["video_path"]가 있으면 스킵하거나,
+            # 없으면 기존 렌더 로직으로 폴백. 기존 흐름을 바꾸지 않으려면 '있으면 사용'만.
+            print(f"[e2e] Postproc completed: {res['video_path']}", file=sys.stderr)
+        
         return manim_final
 
     except Exception as e:

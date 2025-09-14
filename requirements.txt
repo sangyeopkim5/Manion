@@ -28,3 +28,8 @@ sympy
 openai>=1.40.0
 loguru>=0.7
 
+##AWQ postproc
+autoawq
+
+## config parsing
+toml

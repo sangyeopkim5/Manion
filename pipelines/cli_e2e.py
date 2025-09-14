@@ -37,7 +37,19 @@ Examples:
     parser.add_argument("--output-dir", default="ManimcodeOutput", help="Output directory")
     parser.add_argument("--verbose", "-v", action="store_true", help="Verbose output")
     
+    # Postproc flags
+    parser.add_argument("--postproc", action="store_true", help="enable postproc stage (overrides configs/postproc.enabled)")
+    parser.add_argument("--no-postproc", action="store_true", help="disable postproc stage (overrides configs/postproc.enabled)")
+    
     args = parser.parse_args()
+    
+    # Postproc 설정 override
+    if getattr(args, "postproc", False) and getattr(args, "no-postproc", False):
+        print("[warn] both --postproc and --no-postproc provided; ignoring overrides.")
+    elif getattr(args, "postproc", False):
+        os.environ["POSTPROC_ENABLED_OVERRIDE"] = "1"
+    elif getattr(args, "no-postproc", False):
+        os.environ["POSTPROC_ENABLED_OVERRIDE"] = "0"
     
     # 입력 파일 존재 확인
     if not os.path.exists(args.image_path):

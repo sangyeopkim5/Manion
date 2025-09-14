@@ -1,265 +1,291 @@
-Manion Main — E2E Math Problem → Manim Pipeline
-🎯 목적 (Objective)
+# Manion - AI-Powered Mathematical Animation Pipeline
 
-이미지 또는 PDF 형태의 수학 문제를 결정론적 파이프라인으로 처리:
+> Transform mathematical problems into beautiful Manim animations with AI
 
-OCR (텍스트/레이아웃 인식)
+[![Python](https://img.shields.io/badge/Python-3.8+-blue.svg)](https://python.org)
+[![Manim](https://img.shields.io/badge/Manim-Compatible-green.svg)](https://manim.community)
+[![License](https://img.shields.io/badge/License-MIT-yellow.svg)](LICENSE)
 
-GraphSampling (앵커 추출 + LinearIR 변환) - **조건부 실행**
+## 🌟 Overview
 
-CodeGen (LLM 기반 Manim 코드 + CAS-JOBS 생성) - **2가지 경로 지원**
+**Manion** is an intelligent pipeline that converts mathematical problem images into high-quality Manim animation code and videos. It combines OCR, graph sampling, code generation, symbolic computation, and post-processing to create educational animations automatically.
 
-CAS (Sympy로 수학적 검증/계산)
+### ✨ Key Features
 
-Render (CAS 결과 치환 → 최종 Manim 코드)
+- **🧠 AI-Powered**: Uses advanced OCR and LLM models for accurate mathematical content understanding
+- **🎨 Beautiful Animations**: Generates professional-quality Manim animations
+- **🔧 Modular Design**: Each stage can be run independently or as part of the full pipeline
+- **⚡ Flexible**: Supports both image-only and structured input modes
+- **🛡️ Robust**: Comprehensive error handling and safe fallbacks
+- **🎯 Smart**: Automatically detects and processes different mathematical content types
 
-🚀 **새로운 기능: Picture 유무에 따른 조건부 처리**
+## 🚀 Quick Start
 
-- **경로 1 (Picture 없음)**: system_prompt + a_ocr JSON 바로 전달 (b_graphsampling 스킵)
-- **경로 2 (Picture 있음)**: system_prompt + b_graphsampling 결과 + crop 이미지들
+### Prerequisites
 
-📂 디렉터리 구조 (수정 반영)
+- Python 3.8 or higher
+- CUDA-compatible GPU (recommended for OCR models)
+
+### Installation
+
+1. **Clone the repository**
+```bash
+git clone <repository-url>
+cd manion-main
+```
+
+2. **Install dependencies**
+```bash
+pip install -r requirements.txt
+```
+
+3. **Configure your settings**
+```bash
+# Edit configs/openai.toml to set your API keys and model preferences
+cp configs/openai.toml.example configs/openai.toml
+```
+
+### Basic Usage
+
+**Run the complete pipeline:**
+```bash
+# Simple image input
+python -m pipelines.cli_e2e path/to/math_problem.png
+
+# With custom problem name
+python -m pipelines.cli_e2e path/to/math_problem.png --problem-name "problem1"
+
+# Enable post-processing for enhanced quality
+python -m pipelines.cli_e2e path/to/math_problem.png --postproc
+```
+
+## 📊 Pipeline Architecture
+
+Manion processes mathematical problems through **6 intelligent stages**:
+
+```mermaid
+graph TD
+    A[📷 Math Problem Image] --> B[🔍 Stage 1: OCR]
+    B --> C{📐 Has Pictures?}
+    C -->|Yes| D[🎨 Stage 2: GraphSampling]
+    C -->|No| E[💻 Stage 3: CodeGen]
+    D --> E
+    E --> F[🧮 Stage 4: CAS]
+    F --> G[🎬 Stage 5: Render]
+    G --> H{⚙️ Postproc Enabled?}
+    H -->|Yes| I[✨ Stage 6: Postproc]
+    H -->|No| J[📁 Final Output]
+    I --> J
+```
+
+### Stage Details
+
+| Stage | Name | Purpose | Key Technologies |
+|-------|------|---------|------------------|
+| 1 | **OCR** | Extract text and mathematical expressions | DotsOCR, Vision Models |
+| 2 | **GraphSampling** | Vectorize graphical elements | potrace, SVG processing |
+| 3 | **CodeGen** | Generate Manim animation code | GPT, Structured prompts |
+| 4 | **CAS** | Perform symbolic computations | SymPy, Dependency resolution |
+| 5 | **Render** | Create final Manim code | Placeholder substitution |
+| 6 | **Postproc** | Enhance and validate output | LLM refinement, Manim rendering |
+
+## 🛠️ Advanced Usage
+
+### Individual Stage Execution
+
+Run specific pipeline stages independently:
+
+```bash
+# Stage 1: OCR Processing
+python -m pipelines.cli_stage 1 --image-path problem.png --problem-name "test"
+
+# Stage 2: Graph Sampling (if pictures detected)
+python -m pipelines.cli_stage 2 --problem-dir "./temp_ocr_output/test/test"
+
+# Stage 3: Code Generation
+python -m pipelines.cli_stage 3 \
+  --outputschema-path "outputschema.json" \
+  --image-paths "image.jpg" \
+  --output-dir "."
+
+# Stage 4: CAS Computation
+python -m pipelines.cli_stage 4 --code-text "$(cat codegen_output.py)"
+
+# Stage 5: Final Rendering
+python -m pipelines.cli_stage 5 \
+  --manim-code "$(cat manim_draft.py)" \
+  --cas-results "cas_results.json" \
+  --output-path "final.py"
+
+# Stage 6: Post-processing (NEW!)
+python -m pipelines.cli_stage postproc --problem "test"
+```
+
+### Post-processing Control
+
+Fine-tune the post-processing stage:
+
+```bash
+# Force enable post-processing
+python -m pipelines.cli_e2e image.png --postproc
+
+# Force disable post-processing
+python -m pipelines.cli_e2e image.png --no-postproc
+
+# Post-processing runs automatically if enabled in config
+```
+
+## ⚙️ Configuration
+
+### Main Configuration (`configs/openai.toml`)
+
+```toml
+[models]
+codegen = "gpt-4"  # Code generation model
+postproc = "Qwen/Qwen2.5-Coder-14B-Instruct-AWQ"  # Post-processing model
+
+[gen]
+temperature = 1.0
+max_tokens = 4096
+
+[postproc]
+enabled = true                    # Enable/disable post-processing
+base_url = "http://127.0.0.1:8000/v1"  # LLM API endpoint
+api_key = "your-api-key"          # Authentication key
+max_loops = 3                     # Maximum refinement iterations
+temperature = 0.2                 # LLM temperature for post-processing
+quality = "-ql"                   # Manim rendering quality
+timeout_sec = 40                  # Processing timeout
+```
+
+### Environment Variables
+
+Override configuration settings:
+
+```bash
+# Enable post-processing
+export POSTPROC_ENABLED_OVERRIDE=1
+
+# Disable post-processing
+export POSTPROC_ENABLED_OVERRIDE=0
+```
+
+## 📁 Project Structure
+
+```
 manion-main/
-├─ apps/
-│  ├─ a_ocr/             # OCR (Pass-1, Pass-2)
-│  ├─ b_graphsampling/   # 앵커(Anchor), LinearIR 생성
-│  ├─ c_codegen/         # GPT 기반 코드 생성
-│  ├─ d_cas/             # Sympy 계산
-│  └─ e_render/          # 결과 치환 및 코드 완성
-│
-├─ Probleminput/         # ← 문제 입력 디렉터리 (이제 루트에 위치)
-│  ├─ sample1/
-│  │   ├─ sample1.jpg
-│  │   └─ sample1.json (optional: 이미 OCR한 경우)
-│  └─ sample2/
-│      └─ ...
-│
-├─ libs/                 # 공통 schema/util
-├─ configs/              # openai.toml, sympy.toml, render.toml
-├─ pipelines/            # e2e/stage 실행 스크립트
-├─ server.py             # (선택) FastAPI 서버
-├─ README.md
-└─ requirements.txt
-
-🔗 데이터 플로우 (전체 파이프라인 - 조건부 처리)
-Probleminput/<문제명>/*.jpg
-   │
-   ▼
-(1) a_ocr: OCR + post-process + picture-children
-   ▶ <문제명>.json / <문제명>.md / <문제명>.jpg (OCR 시각화)
-   │
-   ▼
-   ┌─────────────────────────────────┐
-   │     Picture 블록 확인           │
-   └─────────────────────────────────┘
-   │
-   ▼
-   ┌─────────────────┐
-   │   Picture 있음?  │
-   └─────────────────┘
-   │
-   ▼                ▼
-경로 2 (있음)      경로 1 (없음)
-   │                │
-   ▼                ▼
-(2) b_graphsampling (2) b_graphsampling
-   + crop 이미지들     스킵
-   ▶ outputschema.json ▶ 빈 outputschema.json
-   │                │
-   ▼                ▼
-(3) c_codegen: GPT 호출 (3) c_codegen: GPT 호출
-   ▶ b_graphsampling   ▶ a_ocr JSON
-   + crop 이미지들     직접 전달
-   ▶ Manim Scene draft + ---CAS-JOBS---
-   │
-   ▼
-(4) d_cas: Sympy 계산
-   ▶ cas_results.json
-   │
-   ▼
-(5) e_render: 치환/완성
-   ▶ 최종 <문제명>.py (Manim 실행 가능)
-
-⚙ 설치
-python -m venv .venv
-. .\.venv\Scripts\Activate.ps1
-pip install -r requirements.txt
-
-
-(옵션) OCR 모델 다운로드:
-
-python apps/a_ocr/tools/download_model.py --type huggingface --name rednote-hilab/dots.ocr
-
-▶ 실행 예시 (루트에서 실행)
-
-**환경 설정 (필수)**
-```powershell
-# 의존성 설치
-pip install -r requirements.txt
-
-# OpenAI API 키 설정
-echo "OPENAI_API_KEY=your_api_key_here" > .env
+├── 📂 apps/                    # Core application modules
+│   ├── a_ocr/                 # OCR processing (DotsOCR)
+│   ├── b_graphsampling/       # Vector graphics processing
+│   ├── c_codegen/            # Code generation (GPT)
+│   ├── d_cas/                # Symbolic computation (SymPy)
+│   └── e_render/             # Final rendering
+├── 📂 libs/                   # Shared libraries
+│   ├── postproc/             # 🆕 Post-processing module
+│   ├── schemas.py            # Data models
+│   └── geo/                  # Geometric utilities
+├── 📂 pipelines/             # Pipeline orchestration
+│   ├── stages.py             # Individual stage functions
+│   ├── e2e.py               # End-to-end pipeline
+│   ├── cli_e2e.py           # E2E command-line interface
+│   └── cli_stage.py         # Stage-specific CLI
+├── 📂 configs/               # Configuration files
+│   ├── openai.toml          # Main configuration
+│   ├── render.toml          # Rendering settings
+│   └── sympy.toml           # CAS settings
+└── 📄 requirements.txt       # Python dependencies
 ```
 
-**1) 전체 파이프라인 (OCR부터) - 새로운 조건부 처리**
+## 🔧 Output Structure
 
-```powershell
-# 기본 예제 (간단한 문제명)
-python -m pipelines.cli_e2e Manion/Probleminput/1.png --problem-name "1"
-
-# Picture가 있는 경우 (경로 2)
-python -m pipelines.cli_e2e Manion/Probleminput/중1-2도형/중1-2도형.png --problem-name "중1-2도형"
-
-# Picture가 없는 경우 (경로 1)  
-python -m pipelines.cli_e2e Manion/Probleminput/중3-1사다리꼴넓이/중3-1사다리꼴넓이.jpg --problem-name "중3-1사다리꼴넓이"
-```
-
-**2) OCR은 이미 끝난 경우 (JSON 동봉)**
-```powershell
-python -m pipelines.cli_e2e Manion/Probleminput/1.png Manion/Probleminput/1.json
-```
-
-**3) 서버로 테스트**
-```powershell
-# 서버 시작
-python server.py
-
-# 다른 터미널에서 API 호출
-curl -X POST "http://localhost:8000/e2e_with_ocr" -H "Content-Type: application/json" -d "{\"image_path\": \"Manion/Probleminput/1.png\", \"problem_name\": \"1\"}"
-```
-
-🧩 단계별 실행 (디버깅)
-
-**기본 예제 (간단한 문제명)**
-```powershell
-# 1단계 OCR
-python -m pipelines.cli_stage 1 --image-path "Manion/Probleminput/1.png" --problem-name "1"
-
-# 2단계 GraphSampling (조건부 실행)
-python -m pipelines.cli_stage 2 --problem-dir "./temp_ocr_output/1/1"
-
-# 3단계 CodeGen
-python -m pipelines.cli_stage 3 --outputschema-path "outputschema.json" --image-paths "image.jpg" --output-dir "."
-
-# 4단계 CAS
-python -m pipelines.cli_stage 4 --code-text "$(Get-Content codegen_output.py)"
-
-# 5단계 Render
-python -m pipelines.cli_stage 5 --manim-code "$(Get-Content manim_draft.py)" --cas-results "cas_results.json" --output-path "final.py"
-```
-
-**Picture가 있는 경우 (경로 2)**
-```powershell
-# 1단계 OCR
-python -m pipelines.cli_stage 1 --image-path "Manion/Probleminput/중1-2도형/중1-2도형.jpg" --problem-name "중1-2도형"
-
-# 2단계 GraphSampling (조건부 실행)
-python -m pipelines.cli_stage 2 --problem-dir "./temp_ocr_output/중1-2도형/중1-2도형"
-
-# 3단계 CodeGen (b_graphsampling + crop 이미지들)
-python -m pipelines.cli_stage 3 --outputschema-path "outputschema.json" --image-paths "image.jpg" --output-dir "."
-
-# 4단계 CAS
-python -m pipelines.cli_stage 4 --code-text "$(Get-Content codegen_output.py)"
-
-# 5단계 Render
-python -m pipelines.cli_stage 5 --manim-code "$(Get-Content manim_draft.py)" --cas-results "cas_results.json" --output-path "final.py"
-```
-
-**Picture가 없는 경우 (경로 1)**
-```powershell
-# 1단계 OCR
-python -m pipelines.cli_stage 1 --image-path "Manion/Probleminput/중3-1사다리꼴넓이/중3-1사다리꼴넓이.jpg" --problem-name "중3-1사다리꼴넓이"
-
-# 2단계 GraphSampling (스킵됨)
-python -m pipelines.cli_stage 2 --problem-dir "./temp_ocr_output/중3-1사다리꼴넓이/중3-1사다리꼴넓이"
-
-# 3단계 CodeGen (a_ocr JSON 직접 전달)
-python -m pipelines.cli_stage 3 --outputschema-path "outputschema.json" --image-paths "image.jpg" --output-dir "."
-
-# 4단계 CAS
-python -m pipelines.cli_stage 4 --code-text "$(Get-Content codegen_output.py)"
-
-# 5단계 Render
-python -m pipelines.cli_stage 5 --manim-code "$(Get-Content manim_draft.py)" --cas-results "cas_results.json" --output-path "final.py"
-```
-
-🌐 서버 실행 (옵션)
-
-웹 또는 외부 서비스에서 호출하려면:
-
-```powershell
-uvicorn server:app --reload --port 8001
-```
-
-**API 엔드포인트:**
-- `/e2e_with_ocr`: 이미지를 업로드 → 단계 1~5 수행 (조건부 처리)
-- `/e2e`: OCR JSON과 함께 → 단계 2~5 수행
-
-🔧 설정 파일
-
-configs/openai.toml : 모델 이름, 토큰 제한
-
-configs/sympy.toml : 변수 도메인, 계산 전략
-
-configs/render.toml : 치환 정책, 출력 경로
-
-📁 결과 확인 위치
+The pipeline generates organized outputs:
 
 ```
-temp_ocr_output/
-├── 1/                           # 기본 예제 (간단한 문제명)
-│   ├── 1.json                   # OCR 결과
-│   ├── 1.jpg                    # OCR 시각화
-│   ├── outputschema.json        # b_graphsampling 결과 (조건부)
-│   ├── codegen_output.py        # CodeGen 결과
-│   └── final.py                 # 최종 Manim 코드
-│
-├── 중1-2도형/                    # Picture가 있는 경우
-│   ├── 중1-2도형.json            # OCR 결과
-│   ├── 중1-2도형.jpg             # OCR 시각화
-│   ├── outputschema.json         # b_graphsampling 결과
-│   ├── 중1-2도형__pic_i0_outputschema.json  # crop 이미지 outputschema
-│   ├── codegen_output.py         # CodeGen 결과
-│   └── final.py                  # 최종 Manim 코드
-│
-└── 중3-1사다리꼴넓이/              # Picture가 없는 경우
-    ├── 중3-1사다리꼴넓이.json      # OCR 결과
-    ├── 중3-1사다리꼴넓이.jpg       # OCR 시각화
-    ├── outputschema.json         # 빈 outputschema (b_graphsampling 스킵)
-    ├── codegen_output.py         # CodeGen 결과 (a_ocr JSON 직접 사용)
-    └── final.py                  # 최종 Manim 코드
+ManimcodeOutput/
+└── problem_name/
+    ├── problem_name.json          # OCR results
+    ├── problem_name.jpg           # Original image
+    ├── __pic_i*.jpg              # Extracted picture blocks
+    ├── outputschema.json         # Vectorized graphics data
+    ├── problem_name.py           # Generated Manim code
+    ├── final_manimcode.py        # ✨ Post-processed code
+    ├── problem_name.mp4          # ✨ Rendered animation
+    └── proof.json                # ✨ Proof validation data
 ```
 
-🛠 체크리스트
+## 🛡️ Safety & Reliability
 
-- [ ] Manion/Probleminput/<문제명>에 이미지 존재?
-- [ ] OCR 결과에서 Picture 블록 확인?
-- [ ] Picture 있음: b_graphsampling + crop 이미지들 처리됨?
-- [ ] Picture 없음: b_graphsampling 스킵됨?
-- [ ] CodeGen에서 [[CAS:id]] 토큰 포함 여부 확인?
-- [ ] CAS 결과가 정상 치환되었는지 확인?
-- [ ] 최종 Manim 코드 실행 시 좌표 왜곡 없는지 시각 검증?
+### Built-in Safety Features
 
-🧠 권장 워크플로우
+- **🔄 Graceful Fallbacks**: Pipeline continues even if optional stages fail
+- **✅ Input Validation**: Automatic detection of missing or invalid inputs
+- **🔒 Non-intrusive**: Post-processing can be safely disabled without affecting core functionality
+- **📊 Comprehensive Logging**: Detailed progress and error reporting
+- **⚡ Timeout Protection**: Prevents hanging on long-running operations
 
-1. **Manion/Probleminput/에 문제 이미지 저장**
-2. **조건부 파이프라인 실행**:
-   ```powershell
-   # 기본 예제 (간단한 문제명)
-   python -m pipelines.cli_e2e Manion/Probleminput/1.png --problem-name "1"
-   
-   # Picture가 있는 경우
-   python -m pipelines.cli_e2e Manion/Probleminput/중1-2도형/중1-2도형.jpg --problem-name "중1-2도형"
-   
-   # Picture가 없는 경우
-   python -m pipelines.cli_e2e Manion/Probleminput/중3-1사다리꼴넓이/중3-1사다리꼴넓이.jpg --problem-name "중3-1사다리꼴넓이"
-   ```
-3. **결과 확인**: `./temp_ocr_output/<문제명>/` 디렉토리에서 outputschema.json 및 최종 결과 확인
-4. **디버깅**: 필요시 단계별 실행으로 디버깅
+### Error Handling
 
-🎯 **예상 로그 메시지**
-- Picture 있음: `[CodeGen] Picture blocks detected - using b_graphsampling + crop images`
-- Picture 없음: `[CodeGen] No Picture blocks - using a_ocr JSON directly`
+```bash
+# Verbose error reporting
+python -m pipelines.cli_e2e image.png --verbose
 
-이제 Picture 유무에 따라 자동으로 최적화된 경로로 처리되므로, 더 효율적이고 빠른 파이프라인이 됩니다!
+# Individual stage debugging
+python -m pipelines.cli_stage 1 --image-path image.png --verbose
+```
+
+## 🎯 Use Cases
+
+### Educational Content Creation
+- Generate animated explanations of mathematical concepts
+- Create interactive problem-solving demonstrations
+- Produce high-quality educational videos
+
+### Research & Development
+- Prototype mathematical visualizations
+- Test and validate mathematical algorithms
+- Generate reproducible computational examples
+
+### Content Automation
+- Batch process mathematical problem sets
+- Automate animation creation workflows
+- Integrate with educational platforms
+
+## 🤝 Contributing
+
+We welcome contributions! Please see our [Contributing Guidelines](CONTRIBUTING.md) for details.
+
+### Development Setup
+
+```bash
+# Install development dependencies
+pip install -r requirements-dev.txt
+
+# Run tests
+python -m pytest tests/
+
+# Format code
+black .
+isort .
+```
+
+## 📜 License
+
+This project is licensed under the MIT License - see the [LICENSE](LICENSE) file for details.
+
+## 🙏 Acknowledgments
+
+- **Manim Community** for the amazing animation framework
+- **OpenAI** for GPT models
+- **DotsOCR** for mathematical OCR capabilities
+- **SymPy** for symbolic mathematics
+- **All contributors** who help make this project better
+
+## 📞 Support
+
+- **Issues**: [GitHub Issues](https://github.com/your-repo/issues)
+- **Discussions**: [GitHub Discussions](https://github.com/your-repo/discussions)
+- **Documentation**: [Wiki](https://github.com/your-repo/wiki)
+
+---
+
+**Made with ❤️ for the mathematical education community**

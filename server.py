@@ -16,6 +16,7 @@ from apps.c_codegen.codegen import run_codegen
 from apps.d_cas.compute import run_cas
 from apps.e_render.fill import fill_placeholders
 from apps.a_ocr.dots_ocr.parser import DotsOCRParser
+from pipelines.stages import run_postproc_stage
 
 load_dotenv()
 
@@ -270,13 +271,25 @@ def generate_endpoint(doc: ProblemDoc):
         # 저장
         _save_outputs(problem_dir, problem_name, manim_code_final)
 
+        # === e2e와 동일: 후처리(postproc) 스테이지 옵션 호출 ===
+        # (configs/openai.toml 의 [postproc].enabled=false 이면 내부에서 자동 skip)
+        try:
+            postproc_res = run_postproc_stage(problem_name)
+        except Exception:
+            postproc_res = None
+
         # 사람이 읽기 쉬운 요약
         cas_results_pretty = _pretty_results(jobs_raw, cas_res)
 
         return {
             "status": "ok",
             "cas_results": cas_results_pretty,
-            "manim_code": manim_code_final[:800]  # 미리보기
+            "manim_code": manim_code_final[:800],  # 미리보기
+            "postproc": {
+                "code_path": (postproc_res or {}).get("code_path"),
+                "video_path": (postproc_res or {}).get("video_path"),
+                "proof":     (postproc_res or {}).get("proof"),
+            }
         }
 
     except HTTPException:
