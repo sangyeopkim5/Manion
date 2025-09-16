@@ -1,356 +1,311 @@
-"""
-개별 단계별 실행 모듈
-각 단계를 독립적으로 실행할 수 있는 함수들
-"""
-import os
-import sys
+"""Pipeline stage orchestration for the deterministic geo workflow."""
+
+from __future__ import annotations
+
 import json
+import os
 import shutil
+from dataclasses import dataclass
+from enum import Enum
 from pathlib import Path
 from types import SimpleNamespace
-from typing import List, Dict, Any, Optional
+from typing import Any, Dict, List, Optional
+
 import toml
 
-# 프로젝트 루트를 Python 경로에 추가
-project_root = Path(__file__).parent.parent
-sys.path.insert(0, str(project_root))
-
-from libs.schemas import ProblemDoc, CASJob, CASResult
+from libs.schemas import CASResult
 from apps.a_ocr.dots_ocr.parser import DotsOCRParser
 from apps.a_ocr.tools.picture_ocr_pipeline import run_pipeline as run_picture_ocr_pipeline
 from apps.b_graphsampling.builder import build_outputschema
-from apps.c_codegen.codegen import run_codegen
-from apps.d_cas.compute import run_cas
-from apps.e_render.fill import fill_placeholders
+from apps.c_geo_codegen import generate_spec
+from apps.d_geo_compute import solve_in_problem_dir
+from apps.e_ceo_codegen import run_ceo_codegen
+from apps.f_ceo_compute import run_ceo_cas
+from apps.g_render import fill_placeholders
+from pipelines.utils import contains_placeholder
 
 
-def stage1_ocr(image_path: str, output_dir: str = "./temp_ocr_output", problem_name: str = None) -> str:
-    """
-    Stage 1: OCR 처리
-    이미지를 OCR 처리하여 JSON과 이미지 출력
-    
-    Args:
-        image_path: 입력 이미지 경로
-        output_dir: 출력 디렉토리
-        problem_name: 문제 이름
-        
-    Returns:
-        str: OCR 출력 디렉토리 경로
-    """
-    if problem_name is None:
-        problem_name = Path(image_path).stem
-    
-    print(f"[Stage 1] Running OCR on: {image_path}")
-    
+class Stage(Enum):
+    A_OCR = "a_ocr"
+    B_GRAPH = "b_graphsampling"
+    C_GEO_CODEGEN = "c_geo_codegen"
+    D_GEO_COMPUTE = "d_geo_compute"
+    E_CEO_CODEGEN = "e_ceo_codegen"
+    F_CEO_COMPUTE = "f_ceo_compute"
+    G_RENDER = "g_render"
+    H_POSTPROCESS = "h_postprocess"
+
+    def __str__(self) -> str:  # pragma: no cover - debugging helper
+        return self.value
+
+
+STAGE_ORDER: List[Stage] = [
+    Stage.A_OCR,
+    Stage.B_GRAPH,
+    Stage.C_GEO_CODEGEN,
+    Stage.D_GEO_COMPUTE,
+    Stage.E_CEO_CODEGEN,
+    Stage.F_CEO_COMPUTE,
+    Stage.G_RENDER,
+    Stage.H_POSTPROCESS,
+]
+
+
+@dataclass
+class PipelinePaths:
+    base_dir: Path
+    problem_name: str
+
+    def __post_init__(self) -> None:
+        self.base_dir = self.base_dir.expanduser().resolve()
+        self.problem_dir = self.base_dir / self.problem_name
+        self.problem_dir.mkdir(parents=True, exist_ok=True)
+
+    @property
+    def ocr_json(self) -> Path:
+        return self.problem_dir / "problem.json"
+
+    @property
+    def ocr_markdown(self) -> Path:
+        return self.problem_dir / "problem.md"
+
+    @property
+    def ocr_visual(self) -> Path:
+        return self.problem_dir / "problem.jpg"
+
+    @property
+    def vector_json(self) -> Path:
+        return self.problem_dir / f"{self.problem_name}_vector.json"
+
+    @property
+    def spec(self) -> Path:
+        return self.problem_dir / "spec.json"
+
+    @property
+    def codegen_output(self) -> Path:
+        return self.problem_dir / "codegen_output.py"
+
+    @property
+    def manim_draft(self) -> Path:
+        return self.problem_dir / "manim_draft.py"
+
+    @property
+    def cas_jobs(self) -> Path:
+        return self.problem_dir / "cas_jobs.json"
+
+    @property
+    def cas_results(self) -> Path:
+        return self.problem_dir / "cas_results.json"
+
+    @property
+    def final_code(self) -> Path:
+        return self.problem_dir / "problem_final.py"
+
+    def input_image_copy(self) -> Optional[Path]:
+        for candidate in sorted(self.problem_dir.glob("problem_input.*")):
+            return candidate
+        return None
+
+    def crop_images(self) -> List[Path]:
+        images = sorted(self.problem_dir.glob("*__pic_i*.jpg"))
+        images.extend(sorted(self.problem_dir.glob("*__pic_i*.png")))
+        return images
+
+
+def _copy_with_name(src: Path, dest: Path) -> None:
+    dest.parent.mkdir(parents=True, exist_ok=True)
+    shutil.copy2(src, dest)
+
+
+def run_stage_a(paths: PipelinePaths, image_path: str, *, overwrite: bool = False) -> Dict[str, Any]:
+    src = Path(image_path).expanduser().resolve()
+    if not src.exists():
+        raise FileNotFoundError(f"input image not found: {image_path}")
+
+    if not overwrite and paths.ocr_json.exists():
+        return {
+            "status": "skipped",
+            "reason": "problem.json already exists",
+            "json": str(paths.ocr_json),
+        }
+
+    tmp_root = paths.problem_dir / "__ocr_raw"
+    if tmp_root.exists():
+        shutil.rmtree(tmp_root)
+
+    parser = DotsOCRParser(output_dir=str(tmp_root))
+    run_picture_ocr_pipeline(parser=parser, input_path=str(src))
+
+    # dots OCR saves results inside <output>/<stem>/<stem>
+    stem = src.stem
+    candidate_dir = tmp_root / stem
+    if (candidate_dir / stem).exists():
+        candidate_dir = candidate_dir / stem
+    search_root = candidate_dir if candidate_dir.exists() else tmp_root
+
+    json_candidates = sorted(
+        [p for p in search_root.rglob("*.json") if "__pic_i" not in p.stem]
+    )
+    if not json_candidates:
+        raise FileNotFoundError("OCR stage did not produce a JSON file")
+
+    main_json = next((p for p in json_candidates if p.stem == stem), json_candidates[0])
+    md_candidates = sorted(search_root.rglob("*.md"))
+    visual_candidates = sorted(
+        [p for p in search_root.rglob("*.jpg") if "__pic_i" not in p.stem]
+    )
+
+    _copy_with_name(main_json, paths.ocr_json)
+    if md_candidates:
+        _copy_with_name(md_candidates[0], paths.ocr_markdown)
+    if visual_candidates:
+        _copy_with_name(visual_candidates[0], paths.ocr_visual)
+
+    for crop in search_root.rglob("*__pic_i*.jpg"):
+        _copy_with_name(crop, paths.problem_dir / crop.name)
+    for crop in search_root.rglob("*__pic_i*.png"):
+        _copy_with_name(crop, paths.problem_dir / crop.name)
+    for crop_json in search_root.rglob("*__pic_i*.json"):
+        _copy_with_name(crop_json, paths.problem_dir / crop_json.name)
+
+    # Preserve original image for downstream prompts
+    input_copy = paths.problem_dir / f"problem_input{src.suffix.lower()}"
+    _copy_with_name(src, input_copy)
+
+    shutil.rmtree(tmp_root, ignore_errors=True)
+
+    return {
+        "status": "ok",
+        "json": str(paths.ocr_json),
+        "markdown": str(paths.ocr_markdown) if paths.ocr_markdown.exists() else None,
+        "visual": str(paths.ocr_visual) if paths.ocr_visual.exists() else None,
+        "crops": [p.name for p in paths.crop_images()],
+    }
+
+
+def run_stage_b(paths: PipelinePaths) -> Dict[str, Any]:
+    if not paths.ocr_json.exists():
+        raise FileNotFoundError("problem.json missing – run OCR stage first")
+
+    args = SimpleNamespace(
+        emit_anchors=True,
+        frame="14x8",
+        dpi=300,
+        vectorizer="potrace",
+        points_per_path=600,
+    )
+    payload = build_outputschema(
+        str(paths.problem_dir),
+        str(paths.vector_json),
+        args=args,
+        vector_output_path=str(paths.vector_json),
+    )
+    return {
+        "status": "ok",
+        "vector_json": str(paths.vector_json),
+        "picture_count": len(payload.get("pictures", [])),
+    }
+
+
+def run_stage_c(paths: PipelinePaths, *, overwrite: bool = False) -> Dict[str, Any]:
+    vector_path = paths.vector_json if paths.vector_json.exists() else None
+    spec = generate_spec(
+        paths.problem_dir,
+        spec_path=paths.spec,
+        vector_json_path=vector_path,
+        overwrite=overwrite,
+    )
+    return {
+        "status": spec.get("status", "draft"),
+        "spec_path": str(paths.spec),
+    }
+
+
+def run_stage_d(paths: PipelinePaths, *, overwrite: bool = True) -> Dict[str, Any]:
+    spec = solve_in_problem_dir(paths.problem_dir, overwrite=overwrite)
+    return {
+        "status": spec.get("status", "solved"),
+        "spec_path": str(paths.spec),
+    }
+
+
+def run_stage_e(paths: PipelinePaths, *, force: bool = False) -> Dict[str, Any]:
+    vector_path = paths.vector_json if paths.vector_json.exists() else None
+    result = run_ceo_codegen(
+        paths.problem_dir,
+        spec_path=paths.spec,
+        ocr_json_path=paths.ocr_json,
+        vector_json_path=vector_path,
+        image_paths=None,
+        force=force,
+    )
+    return result
+
+
+def run_stage_f(paths: PipelinePaths, *, overwrite: bool = True) -> Dict[str, Any]:
+    return run_ceo_cas(
+        paths.problem_dir,
+        cas_jobs_path=paths.cas_jobs,
+        output_path=paths.cas_results,
+        overwrite=overwrite,
+    )
+
+
+def _load_cas_results(path: Path) -> List[CASResult]:
+    if not path.exists():
+        return []
     try:
-        ocr_parser = DotsOCRParser(output_dir=output_dir)
-        ocr_results = run_picture_ocr_pipeline(
-            parser=ocr_parser,
-            input_path=image_path
-        )
-        
-        ocr_output_dir = f"{output_dir}/{problem_name}/{problem_name}"
-        print(f"[Stage 1] OCR completed. Output: {ocr_output_dir}")
-        return ocr_output_dir
-        
-    except Exception as e:
-        print(f"[Stage 1] OCR failed: {e}")
-        raise
+        data = json.loads(path.read_text(encoding="utf-8"))
+    except json.JSONDecodeError:
+        return []
+    if not isinstance(data, list):
+        return []
+    results: List[CASResult] = []
+    for item in data:
+        try:
+            results.append(CASResult(**item))
+        except Exception:
+            continue
+    return results
 
 
-def stage2_graphsampling(problem_dir: str, output_path: str = None) -> str:
-    """
-    Stage 2: GraphSampling 처리 (조건부)
-    OCR JSON에서 Picture 블록이 있는지 확인 후 조건부로 실행
-    crop된 이미지들에 대해서도 그래프샘플링 수행
-    
-    Args:
-        problem_dir: 문제 디렉토리 (JSON과 이미지 포함)
-        output_path: 출력 스키마 경로
-        
-    Returns:
-        str: outputschema.json 경로
-    """
-    if output_path is None:
-        output_path = os.path.join(problem_dir, "outputschema.json")
-    
-    print(f"[Stage 2] Checking Picture blocks in: {problem_dir}")
-    
-    try:
-        # Picture 블록이 있는지 확인
-        from apps.c_codegen.codegen import has_picture_blocks
-        problem_dir_path = Path(problem_dir)
-        problem_name = problem_dir_path.name
-        ocr_json_path = problem_dir_path / f"{problem_name}.json"
-        
-        if not ocr_json_path.exists():
-            # JSON 파일을 찾을 수 없으면 첫 번째 JSON 파일 사용
-            json_files = list(problem_dir_path.glob("*.json"))
-            if json_files:
-                ocr_json_path = json_files[0]
-            else:
-                raise FileNotFoundError(f"No JSON file found in {problem_dir}")
-        
-        has_pictures = has_picture_blocks(str(ocr_json_path))
-        
-        if has_pictures:
-            print(f"[Stage 2] Picture blocks detected - running b_graphsampling...")
-            # Picture가 있는 경우: b_graphsampling 실행
-            args = SimpleNamespace(
-                emit_anchors=True,
-                frame="14x8",
-                dpi=300,
-                vectorizer="potrace",
-                points_per_path=600,
-                only_picture=False,
-            )
-            
-            # b_graphsampling: 기존 JSON에 vector_anchors 추가
-            build_outputschema(problem_dir, output_path, args=args)
-            print(f"[Stage 2] GraphSampling completed. Vector anchors added to original JSON.")
-        else:
-            print(f"[Stage 2] No Picture blocks detected - skipping b_graphsampling")
-            # Picture가 없는 경우: 빈 outputschema 파일 생성
-            with open(output_path, 'w', encoding='utf-8') as f:
-                json.dump({}, f)
-        
-        return output_path
-        
-    except Exception as e:
-        print(f"[Stage 2] GraphSampling failed: {e}")
-        raise
+def run_stage_g(paths: PipelinePaths) -> Dict[str, Any]:
+    if not paths.manim_draft.exists():
+        raise FileNotFoundError("manim_draft.py missing – run ceo_codegen first")
+
+    manim_code = paths.manim_draft.read_text(encoding="utf-8")
+    cas_results = _load_cas_results(paths.cas_results)
+    final = fill_placeholders(manim_code, cas_results)
+    paths.final_code.write_text(final.manim_code_final, encoding="utf-8")
+
+    legacy_dir = Path("ManimcodeOutput") / paths.problem_name
+    legacy_dir.mkdir(parents=True, exist_ok=True)
+    legacy_file = legacy_dir / f"{paths.problem_name}.py"
+    legacy_file.write_text(final.manim_code_final, encoding="utf-8")
+
+    return {
+        "status": "rendered",
+        "final_path": str(paths.final_code),
+        "placeholders_remaining": contains_placeholder(final.manim_code_final),
+    }
 
 
-def stage3_codegen(outputschema_path: str, image_paths: List[str], output_dir: str, ocr_json_path: str = None) -> str:
-    """
-    Stage 3: CodeGen 처리 (조건부)
-    Picture 유무에 따라 다른 경로로 GPT에 전달
-    
-    Args:
-        outputschema_path: outputschema.json 경로
-        image_paths: 이미지 경로 리스트
-        output_dir: 출력 디렉토리
-        ocr_json_path: OCR JSON 경로 (선택사항)
-        
-    Returns:
-        str: 생성된 코드 텍스트
-    """
-    print(f"[Stage 3] Running CodeGen...")
-    
-    try:
-        # OCR JSON 경로가 제공되지 않으면 기본 경로에서 찾기
-        if not ocr_json_path:
-            output_dir_path = Path(output_dir)
-            problem_name = output_dir_path.name
-            ocr_json_path = str(output_dir_path / f"{problem_name}.json")
-        
-        # b_graphsampling에서 1.json에 vector_anchors를 추가했으므로, 1.json을 직접 사용
-        code_text = run_codegen(ocr_json_path, image_paths, output_dir, ocr_json_path)
-        if not code_text or not code_text.strip():
-            raise ValueError("CodeGen produced empty code")
-        
-        print(f"[Stage 3] CodeGen completed")
-        return code_text
-        
-    except Exception as e:
-        print(f"[Stage 3] CodeGen failed: {e}")
-        raise
-
-
-def stage4_cas(code_text: str) -> tuple[List[Dict], str, List[CASResult]]:
-    """
-    Stage 4: CAS 처리
-    코드에서 CAS 작업을 추출하고 SymPy로 계산
-    
-    Args:
-        code_text: CodeGen 출력 텍스트
-        
-    Returns:
-        tuple: (jobs_raw, manim_code_draft, cas_results)
-    """
-    print(f"[Stage 4] Processing CAS...")
-    
-    try:
-        # CAS 작업과 Manim 코드 분리
-        jobs_raw, manim_code_draft = _extract_jobs_and_code(code_text)
-        
-        # CAS 실행
-        jobs = [CASJob(**j) for j in jobs_raw]
-        cas_res = run_cas(jobs)
-        
-        print(f"[Stage 4] CAS completed. Processed {len(cas_res)} jobs")
-        return jobs_raw, manim_code_draft, cas_res
-        
-    except Exception as e:
-        print(f"[Stage 4] CAS failed: {e}")
-        raise
-
-
-def stage5_render(manim_code_draft: str, cas_results: List[CASResult], output_path: str) -> str:
-    """
-    Stage 5: Render 처리
-    Placeholder 치환하여 최종 Manim 코드 생성
-    
-    Args:
-        manim_code_draft: 초안 Manim 코드
-        cas_results: CAS 계산 결과
-        output_path: 출력 파일 경로
-        
-    Returns:
-        str: 최종 Manim 코드
-    """
-    print(f"[Stage 5] Rendering final code...")
-    
-    try:
-        # Placeholder 치환
-        final = fill_placeholders(manim_code_draft, cas_results)
-        manim_final = final.manim_code_final.strip()
-        
-        # 파일 저장
-        with open(output_path, "w", encoding="utf-8") as f:
-            f.write(manim_final)
-        
-        print(f"[Stage 5] Render completed. Output: {output_path}")
-        return manim_final
-        
-    except Exception as e:
-        print(f"[Stage 5] Render failed: {e}")
-        raise
-
-
-def _extract_jobs_and_code(code_text: str):
-    """CodeGen 출력에서 CAS 작업과 Manim 코드 분리"""
-    import re
-    
-    # 코드펜스 제거
-    code_text = re.sub(r'^\s*```(?:python)?\s*', '', code_text)
-    code_text = re.sub(r'\s*```\s*$', '', code_text)
-    
-    # CAS-JOBS 섹션 찾기
-    m = re.search(r"-{3}CAS-JOBS-{3}", code_text)
-    if not m:
-        raise RuntimeError("CAS-JOBS 섹션을 찾을 수 없습니다.")
-    
-    mark = m.start()
-    manim_code = code_text[:mark].strip()
-    tail = code_text[mark + len("---CAS-JOBS---"):]
-    
-    # JSON 배열 추출
-    json_text = _find_balanced_json_array(tail, 0)
-    jobs_raw = json.loads(json_text)
-    
-    # ID 자동 부여
-    for idx, j in enumerate(jobs_raw, 1):
-        j.setdefault("id", str(idx))
-    
-    return jobs_raw, manim_code
-
-
-def _find_balanced_json_array(text: str, start_idx: int) -> str:
-    """균형 잡힌 JSON 배열 추출"""
-    i = text.find("[", start_idx)
-    if i == -1:
-        raise RuntimeError("CAS-JOBS JSON 배열 시작 '['를 찾지 못했습니다.")
-    
-    depth = 0
-    for j in range(i, len(text)):
-        c = text[j]
-        if c == "[":
-            depth += 1
-        elif c == "]":
-            depth -= 1
-            if depth == 0:
-                return text[i:j+1]
-    
-    raise RuntimeError("대괄호 균형이 맞는 JSON 배열 끝을 찾지 못했습니다.")
-
-
-def run_stage(stage_num: int, **kwargs) -> Any:
-    """
-    특정 단계 실행
-    
-    Args:
-        stage_num: 실행할 단계 번호 (1-5)
-        **kwargs: 단계별 필요한 인자들
-        
-    Returns:
-        Any: 단계별 출력 결과
-    """
-    if stage_num == 1:
-        return stage1_ocr(**kwargs)
-    elif stage_num == 2:
-        return stage2_graphsampling(**kwargs)
-    elif stage_num == 3:
-        return stage3_codegen(**kwargs)
-    elif stage_num == 4:
-        return stage4_cas(**kwargs)
-    elif stage_num == 5:
-        return stage5_render(**kwargs)
-    else:
-        raise ValueError(f"Invalid stage number: {stage_num}. Must be 1-5.")
-
-
-if __name__ == "__main__":
-    import argparse
-    
-    parser = argparse.ArgumentParser(description="Run individual pipeline stages")
-    parser.add_argument("stage", type=int, choices=[1,2,3,4,5], help="Stage number to run")
-    parser.add_argument("--image-path", help="Input image path (for stage 1)")
-    parser.add_argument("--problem-dir", help="Problem directory (for stage 2)")
-    parser.add_argument("--outputschema-path", help="Outputschema path (for stage 3)")
-    parser.add_argument("--image-paths", nargs="+", help="Image paths (for stage 3)")
-    parser.add_argument("--output-dir", help="Output directory")
-    parser.add_argument("--code-text", help="Code text (for stage 4)")
-    parser.add_argument("--manim-code", help="Manim code draft (for stage 5)")
-    parser.add_argument("--cas-results", help="CAS results JSON (for stage 5)")
-    parser.add_argument("--output-path", help="Output file path")
-    
-    args = parser.parse_args()
-    
-    # 단계별 인자 구성
-    kwargs = {}
-    if args.image_path:
-        kwargs["image_path"] = args.image_path
-    if args.problem_dir:
-        kwargs["problem_dir"] = args.problem_dir
-    if args.outputschema_path:
-        kwargs["output_path"] = args.outputschema_path
-    if args.image_paths:
-        kwargs["image_paths"] = args.image_paths
-    if args.output_dir:
-        kwargs["output_dir"] = args.output_dir
-    if args.code_text:
-        kwargs["code_text"] = args.code_text
-    if args.output_path:
-        kwargs["output_path"] = args.output_path
-    
-    try:
-        result = run_stage(args.stage, **kwargs)
-        print(f"Stage {args.stage} completed successfully")
-        print(f"Result: {result}")
-    except Exception as e:
-        print(f"Stage {args.stage} failed: {e}")
-        sys.exit(1)
-
-
-# --- postproc stage functions -----------------------------------------------
+# --- Post-processing -------------------------------------------------------
 
 def _load_postproc_conf() -> Dict[str, Any]:
     try:
         cfg = toml.load("configs/openai.toml").get("postproc", {})
     except Exception:
         cfg = {}
-    
-    # 환경변수 우선 적용
-    ov = os.environ.get("POSTPROC_ENABLED_OVERRIDE")
-    if ov == "1":
+
+    override = os.environ.get("POSTPROC_ENABLED_OVERRIDE")
+    if override == "1":
         enabled = True
-    elif ov == "0":
+    elif override == "0":
         enabled = False
     else:
         enabled = cfg.get("enabled", False)
-    
-    # 디폴트 (비활성화)
+
     return {
         "enabled": enabled,
         "model": cfg.get("model", ""),
@@ -364,25 +319,19 @@ def _load_postproc_conf() -> Dict[str, Any]:
 
 
 def run_postproc_stage(problem_name: str) -> Optional[Dict[str, Any]]:
-    """
-    문제별 폴더 구조:
-      ManimcodeOutput/<problem>/<problem>.py  (입력)
-    출력:
-      ManimcodeOutput/<problem>/final_manimcode.py
-      ManimcodeOutput/<problem>/<problem>.mp4
-      ManimcodeOutput/<problem>/proof.json
-    """
     conf = _load_postproc_conf()
     if not conf["enabled"]:
         return None
 
-    from libs.postproc.postproc import postprocess_and_render, Config as PostCfg
-    from libs.postproc.llm_openai import OpenAICompatLLM
+    try:
+        from libs.postproc.postproc import postprocess_and_render, Config as PostCfg
+        from libs.postproc.llm_openai import OpenAICompatLLM
+    except Exception:
+        return None
 
-    # 입력 파일 유효성 확인 (없으면 기존 파이프라인 건드리지 않도록 None 반환)
-    base_dir = os.path.join("ManimcodeOutput", problem_name)
-    input_py = os.path.join(base_dir, f"{problem_name}.py")
-    if not os.path.exists(input_py):
+    base_dir = Path("ManimcodeOutput") / problem_name
+    input_py = base_dir / f"{problem_name}.py"
+    if not input_py.exists():
         return None
 
     llm = OpenAICompatLLM(
@@ -402,3 +351,7 @@ def run_postproc_stage(problem_name: str) -> Optional[Dict[str, Any]]:
         ),
     )
     return {"code_path": code_path, "video_path": video_path, "proof": proof}
+
+
+def run_stage_h(paths: PipelinePaths) -> Optional[Dict[str, Any]]:
+    return run_postproc_stage(paths.problem_name)
