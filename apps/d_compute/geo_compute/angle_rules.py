@@ -1,7 +1,8 @@
 ﻿from __future__ import annotations
 import numpy as np
 from manim import *
-from geom_utils import unit
+
+from .geom_utils import unit
 
 def _ang(v):
     return float(np.arctan2(v[1], v[0]))

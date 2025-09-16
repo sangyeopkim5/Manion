@@ -1,129 +1,109 @@
 #!/usr/bin/env python3
-"""
-E2E CLI 도구
-전체 파이프라인을 실행하는 명령줄 인터페이스
-"""
-import os
-import sys
+"""Command line interface for the deterministic end-to-end pipeline."""
+
+from __future__ import annotations
+
 import argparse
+import os
 from pathlib import Path
-
-# 프로젝트 루트를 Python 경로에 추가
-project_root = Path(__file__).parent.parent
-sys.path.insert(0, str(project_root))
-
-from pipelines.e2e import run_pipeline, run_pipeline_with_ocr
+from pipelines.e2e import run_e2e
+from pipelines.stages import Stage
 
 
-def main():
-    """E2E CLI 메인 함수"""
+def _parse_stage(value: Optional[str]) -> Optional[Stage]:
+    if value is None:
+        return None
+    value = value.strip().lower()
+    for stage in Stage:
+        if value == stage.value:
+            return stage
+        if value == stage.name.lower():
+            return stage
+        if value == stage.value.split("_")[0]:
+            return stage
+    raise argparse.ArgumentTypeError(f"unknown stage: {value}")
+
+
+def _apply_postproc_overrides(args: argparse.Namespace) -> None:
+    if getattr(args, "postproc", False) and getattr(args, "no_postproc", False):
+        print("[warn] both --postproc and --no-postproc supplied; ignoring overrides")
+        return
+    if getattr(args, "postproc", False):
+        os.environ["POSTPROC_ENABLED_OVERRIDE"] = "1"
+    elif getattr(args, "no_postproc", False):
+        os.environ["POSTPROC_ENABLED_OVERRIDE"] = "0"
+
+
+def main() -> None:
     parser = argparse.ArgumentParser(
-        description="Manion-CAS E2E Pipeline CLI",
+        description="Run the Manion deterministic pipeline",
         formatter_class=argparse.RawDescriptionHelpFormatter,
         epilog="""
 Examples:
-  # OCR 방식 (이미지만 입력)
-  python -m pipelines.cli_e2e Manion/Probleminput/1.png
-  python -m pipelines.cli_e2e Manion/Probleminput/1.png --problem-name "1"
-  
-  # 기존 방식 (이미지 + JSON)
-  python -m pipelines.cli_e2e Manion/Probleminput/1.png Manion/Probleminput/1.json
-        """
+  # Run full pipeline from OCR
+  python -m pipelines.cli_e2e path/to/problem.jpg --problem-name DemoProblem
+
+  # Resume from geo stages (spec must exist)
+  python -m pipelines.cli_e2e --geo --problem-name DemoProblem
+        """,
     )
-    
-    parser.add_argument("image_path", help="Input image file path")
-    parser.add_argument("json_path", nargs="?", help="Input JSON file path (optional, for legacy mode)")
-    parser.add_argument("--problem-name", help="Problem name (for OCR mode)")
-    parser.add_argument("--output-dir", default="ManimcodeOutput", help="Output directory")
-    parser.add_argument("--verbose", "-v", action="store_true", help="Verbose output")
-    
-    # Postproc flags
-    parser.add_argument("--postproc", action="store_true", help="enable postproc stage (overrides configs/postproc.enabled)")
-    parser.add_argument("--no-postproc", action="store_true", help="disable postproc stage (overrides configs/postproc.enabled)")
-    
+    parser.add_argument("image_path", nargs="?", help="Input image to process")
+    parser.add_argument("--problem-name", help="Identifier for the problem")
+    parser.add_argument("--problem-dir", help="Existing problem directory")
+    parser.add_argument("--base-dir", default="Probleminput", help="Root directory for pipeline outputs")
+    parser.add_argument("--from-stage", help="Start from this stage (e.g. a_ocr, c_geo_codegen)")
+    parser.add_argument("--to-stage", help="Stop after this stage")
+    parser.add_argument("--geo", action="store_true", help="Shortcut for --from-stage c_geo_codegen")
+    parser.add_argument("--force", action="store_true", help="Re-run stages even if outputs exist")
+    parser.add_argument("--postproc", action="store_true", help="Force-enable post processing stage")
+    parser.add_argument("--no-postproc", action="store_true", help="Disable post processing stage")
+
     args = parser.parse_args()
-    
-    # Postproc 설정 override
-    if getattr(args, "postproc", False) and getattr(args, "no-postproc", False):
-        print("[warn] both --postproc and --no-postproc provided; ignoring overrides.")
-    elif getattr(args, "postproc", False):
-        os.environ["POSTPROC_ENABLED_OVERRIDE"] = "1"
-    elif getattr(args, "no-postproc", False):
-        os.environ["POSTPROC_ENABLED_OVERRIDE"] = "0"
-    
-    # 입력 파일 존재 확인
-    if not os.path.exists(args.image_path):
-        print(f"Error: Image file not found: {args.image_path}")
-        sys.exit(1)
-    
-    if args.json_path and not os.path.exists(args.json_path):
-        print(f"Error: JSON file not found: {args.json_path}")
-        sys.exit(1)
-    
-    try:
-        # OCR 방식 (이미지만 입력)
-        if not args.json_path:
-            print("🚀 Running E2E pipeline with OCR...")
-            print(f"📁 Input image: {args.image_path}")
-            if args.problem_name:
-                print(f"📝 Problem name: {args.problem_name}")
-            
-            result = run_pipeline_with_ocr(
-                image_path=args.image_path,
-                problem_name=args.problem_name
-            )
-            
-            if result:
-                print("✅ E2E pipeline completed successfully!")
-                print(f"📄 Generated code length: {len(result)} characters")
-                if args.verbose:
-                    print("\n" + "="*50)
-                    print("GENERATED CODE")
-                    print("="*50)
-                    print(result)
-            else:
-                print("❌ E2E pipeline failed - no code generated")
-                sys.exit(1)
-        
-        # 기존 방식 (이미지 + JSON)
+    _apply_postproc_overrides(args)
+
+    start_stage = Stage.C_GEO_CODEGEN if args.geo else Stage.A_OCR
+    if args.from_stage:
+        start_stage = _parse_stage(args.from_stage)
+        if start_stage is None:
+            start_stage = Stage.A_OCR
+    end_stage = _parse_stage(args.to_stage)
+
+    problem_name = args.problem_name
+    base_dir = Path(args.base_dir)
+
+    if args.problem_dir:
+        problem_dir = Path(args.problem_dir)
+        if not problem_dir.exists():
+            parser.error(f"problem directory not found: {problem_dir}")
+        base_dir = problem_dir.parent
+        if problem_name is None:
+            problem_name = problem_dir.name
+
+    image_path = args.image_path
+    if start_stage == Stage.A_OCR and not image_path:
+        parser.error("image_path is required when starting from OCR stage")
+
+    if problem_name is None:
+        if image_path:
+            problem_name = Path(image_path).stem
         else:
-            print("🚀 Running E2E pipeline with existing JSON...")
-            print(f"📁 Input image: {args.image_path}")
-            print(f"📄 Input JSON: {args.json_path}")
-            
-            # ProblemDoc 생성
-            import json
-            from libs.schemas import ProblemDoc
-            
-            with open(args.json_path, 'r', encoding='utf-8') as f:
-                items = json.load(f)
-            
-            doc = ProblemDoc(items=items, image_path=args.image_path)
-            
-            result = run_pipeline(doc)
-            
-            if result:
-                print("✅ E2E pipeline completed successfully!")
-                print(f"📄 Generated code length: {len(result)} characters")
-                if args.verbose:
-                    print("\n" + "="*50)
-                    print("GENERATED CODE")
-                    print("="*50)
-                    print(result)
-            else:
-                print("❌ E2E pipeline failed - no code generated")
-                sys.exit(1)
-                
-    except KeyboardInterrupt:
-        print("\n⚠️ Pipeline interrupted by user")
-        sys.exit(1)
-    except Exception as e:
-        print(f"❌ Pipeline failed: {e}")
-        if args.verbose:
-            import traceback
-            traceback.print_exc()
-        sys.exit(1)
+            parser.error("--problem-name is required when image_path is omitted")
+
+    result = run_e2e(
+        image_path=image_path,
+        problem_name=problem_name,
+        base_dir=base_dir,
+        start_stage=start_stage,
+        end_stage=end_stage,
+        force=args.force,
+    )
+
+    print(f"\n✅ Pipeline completed. Outputs stored in {result['problem_dir']}")
+    for entry in result["results"]:
+        stage = entry["stage"]
+        status = entry["result"].get("status") if isinstance(entry["result"], dict) else "ok"
+        print(f" - {stage}: {status}")
 
 
-if __name__ == "__main__":
+if __name__ == "__main__":  # pragma: no cover
     main()

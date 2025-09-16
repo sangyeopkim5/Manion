@@ -1,6 +1,7 @@
 ﻿from __future__ import annotations
 import numpy as np
-from geom_utils import v3, unit, rotate, seg_x, area_signed, diag_cross_inside
+
+from .geom_utils import v3, unit, rotate, seg_x, area_signed, diag_cross_inside
 
 # === A1: 기준선 AD + 대각선 길이 AC/BD + 각 ∠DAC, ∠ADB ======================
 def solve_quad_diaglen_ang(A, D, theta_A_deg, theta_D_deg, AC_len, BD_len):

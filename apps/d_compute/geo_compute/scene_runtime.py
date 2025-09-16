@@ -1,8 +1,9 @@
 ﻿from __future__ import annotations
 import os, json, numpy as np
 from manim import *
-from angle_rules import make_angle_inner, measured_inner_deg, label_dual
-from planner import load_spec, plan_and_solve, scale_into_box
+
+from .angle_rules import make_angle_inner, measured_inner_deg, label_dual
+from .planner import load_spec, plan_and_solve, scale_into_box
 
 # --- NEW: 방향 해석기 (DIR 제거용) ---
 DIR_MAP = {

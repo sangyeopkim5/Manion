@@ -2,6 +2,8 @@ from __future__ import annotations
 
 import json
 import os
+from datetime import datetime
+from pathlib import Path
 from typing import List, Dict, Any
 
 try:
@@ -76,76 +78,136 @@ def load_boxes_from_problem_dir(problem_dir: str) -> List[Dict[str, Any]]:
     return data  # list of boxes with bbox, category, text
 
 
-def build_outputschema(problem_dir: str, output_path: str, args: Any | None = None) -> Dict[str, Any]:
-    # 기존 a_ocr JSON 파일 찾기 (원본 JSON)
-    json_files = [f for f in os.listdir(problem_dir) if f.endswith(".json") and "__pic_i" not in f]
+def build_outputschema(
+    problem_dir: str,
+    output_path: str | None,
+    args: Any | None = None,
+    *,
+    vector_output_path: str | None = None,
+) -> Dict[str, Any]:
+    """Generate vector anchors for every Picture block discovered in the OCR JSON.
+
+    Historically this function injected the first crop image's anchors directly
+    back into the OCR JSON.  The deterministic pipeline now requires the
+    complete vectorisation result to be stored separately so that downstream
+    geo stages can reason about the diagram independent from OCR text.  The
+    behaviour is therefore extended as follows:
+
+    * ``problem_dir`` is expected to contain the OCR outputs produced by
+      :mod:`apps.a_ocr` – notably ``problem.json`` and optional crop images
+      named ``problem__pic_i*.jpg``.
+    * every ``Picture`` block receives a ``vector_anchors`` payload built via
+      :func:`apps.b_graphsampling.anchor_ir.build_anchor_item`.
+    * a consolidated ``problem_vector.json`` snapshot is written so that later
+      stages can reference only the geometric information.
+
+    The function still returns the patched OCR JSON object for backwards
+    compatibility with older callers.
+    """
+
+    problem_dir_path = Path(problem_dir).expanduser().resolve()
+    if not problem_dir_path.exists():
+        raise FileNotFoundError(f"problem directory does not exist: {problem_dir}")
+
+    json_files = sorted(
+        [
+            p
+            for p in problem_dir_path.glob("*.json")
+            if "__pic_i" not in p.name and not p.name.endswith("_vector.json")
+        ]
+    )
     if not json_files:
-        print("[WARN] No original OCR JSON found")
-        return {}
-    
-    # 원본 JSON 로드
-    original_json_path = os.path.join(problem_dir, json_files[0])
-    with open(original_json_path, "r", encoding="utf-8") as f:
+        raise FileNotFoundError(f"No OCR JSON found inside {problem_dir}")
+
+    original_json_path = json_files[0]
+    with original_json_path.open("r", encoding="utf-8") as f:
         original_data = json.load(f)
-    
-    # crop된 이미지 파일 찾기 (__pic_i 패턴, 순서대로)
-    crop_images = []
-    for f in os.listdir(problem_dir):
-        if "__pic_i" in f and any(f.endswith(ext) for ext in [".jpg", ".jpeg", ".png"]):
-            crop_images.append(os.path.join(problem_dir, f))
-    
-    # 순서대로 정렬 (__pic_i0, __pic_i1, __pic_i2, ...)
-    crop_images.sort(key=lambda x: int(x.split("__pic_i")[1].split(".")[0]) if "__pic_i" in x else 0)
-    
-    if not crop_images:
-        print("[WARN] No crop images found for vectorization")
-        return original_data
-    
-    # 첫 번째 crop 이미지만 사용
-    crop_image = crop_images[0]
-    print(f"[b_graphsampling] Using crop image: {crop_image}")
-    
-    # vector화 수행
-    if args is not None and getattr(args, "emit_anchors", False):
+
+    crop_images = sorted(
+        problem_dir_path.glob("*__pic_i*.jpg")
+    )
+    crop_images += sorted(problem_dir_path.glob("*__pic_i*.png"))
+    crop_images += sorted(problem_dir_path.glob("*__pic_i*.jpeg"))
+
+    picture_items: List[Dict[str, Any]] = []
+    if isinstance(original_data, list):
+        for entry in original_data:
+            if isinstance(entry, dict) and entry.get("category") == "Picture":
+                picture_items.append(entry)
+
+    frame_w, frame_h = 14.0, 8.0
+    if args is not None and hasattr(args, "frame") and isinstance(args.frame, str):
+        parts = args.frame.lower().split("x")
+        if len(parts) == 2:
+            try:
+                frame_w = float(parts[0])
+                frame_h = float(parts[1])
+            except ValueError:
+                pass
+
+    dpi = getattr(args, "dpi", 300) if args is not None else 300
+    vectorizer = getattr(args, "vectorizer", "potrace") if args is not None else "potrace"
+    points_per_path = getattr(args, "points_per_path", 600) if args is not None else 600
+
+    vector_records: List[Dict[str, Any]] = []
+    for idx, picture in enumerate(picture_items):
+        crop_path = crop_images[idx] if idx < len(crop_images) else None
+        if crop_path is None:
+            print(f"[b_graphsampling] WARN: missing crop image for picture index {idx}")
+            continue
+
         try:
-            fw, fh = (14.0, 8.0)
-            if hasattr(args, "frame") and isinstance(args.frame, str):
-                parts = args.frame.lower().split("x")
-                if len(parts) == 2:
-                    fw = float(parts[0])
-                    fh = float(parts[1])
-            
-            # crop된 이미지 전체를 vector화 (bbox 없이)
             anchor_item = build_anchor_item(
-                image_path=crop_image,
-                frame_w=fw,
-                frame_h=fh,
-                dpi=getattr(args, "dpi", 300),
-                vectorizer=getattr(args, "vectorizer", "potrace"),
-                points_per_path=getattr(args, "points_per_path", 600),
-                crop_bbox=None,  # crop된 이미지 전체 사용
+                image_path=str(crop_path),
+                frame_w=frame_w,
+                frame_h=frame_h,
+                dpi=dpi,
+                vectorizer=vectorizer,
+                points_per_path=points_per_path,
+                crop_bbox=None,
             )
-            
-            # Picture 블록 찾아서 vector_anchors 추가
-            if isinstance(original_data, list):
-                for item in original_data:
-                    if isinstance(item, dict) and item.get("category") == "Picture":
-                        item["vector_anchors"] = anchor_item
-                        break
-            
-            # 수정된 원본 JSON을 원본 파일에 덮어쓰기
-            with open(original_json_path, "w", encoding="utf-8") as f:
-                json.dump(original_data, f, ensure_ascii=False, indent=2)
-            
-            print(f"[b_graphsampling] Added vector_anchors to {original_json_path}")
-            return original_data
-            
-        except Exception as e:
-            import traceback; traceback.print_exc()
-            print(f"[anchor_ir] injection failed: {e}")
-            return original_data
-    
-    return original_data
+        except Exception as exc:  # pragma: no cover - diagnostic aid
+            print(f"[b_graphsampling] WARN: failed to vectorise {crop_path}: {exc}")
+            continue
+
+        picture["vector_anchors"] = anchor_item
+        vector_records.append(
+            {
+                "picture_index": idx,
+                "picture_id": picture.get("id") or picture.get("uuid") or f"picture_{idx}",
+                "image": Path(crop_path).name,
+                "anchors": anchor_item,
+            }
+        )
+
+    # Persist the patched OCR JSON so downstream stages read the enriched data.
+    with original_json_path.open("w", encoding="utf-8") as f:
+        json.dump(original_data, f, ensure_ascii=False, indent=2)
+
+    vector_payload = {
+        "problem": problem_dir_path.name,
+        "created_at": datetime.utcnow().isoformat() + "Z",
+        "pictures": vector_records,
+        "source_json": original_json_path.name,
+        "vectorizer": vectorizer,
+        "frame_size": [frame_w, frame_h],
+        "dpi": dpi,
+    }
+
+    if vector_output_path is None and output_path:
+        vector_output_path = Path(output_path)
+
+    if vector_output_path is None:
+        vector_output_path = problem_dir_path / f"{problem_dir_path.name}_vector.json"
+    else:
+        vector_output_path = Path(vector_output_path)
+
+    vector_output_path.parent.mkdir(parents=True, exist_ok=True)
+    with vector_output_path.open("w", encoding="utf-8") as f:
+        json.dump(vector_payload, f, ensure_ascii=False, indent=2)
+
+    vector_payload["path"] = str(vector_output_path)
+    return vector_payload
 
 
 def is_problem_dir(path: str) -> bool:
@@ -178,8 +240,9 @@ def main():
             out_dir = os.path.join(root_parent, "outputjson")
             os.makedirs(out_dir, exist_ok=True)
             out_path = os.path.join(out_dir, f"{base_name}.outputschema.json")
-        ir = build_outputschema(target, out_path, args)
-        print(f"Wrote {out_path} with {len(ir.get('reading_order', []))} items.")
+        payload = build_outputschema(target, out_path, args)
+        count = len(payload.get("pictures", []))
+        print(f"Wrote {payload.get('path', out_path)} with {count} vector picture(s).")
         return
 
     # If not a single problem dir, process each subdirectory that contains a problem JSON
@@ -192,8 +255,9 @@ def main():
             out_dir = os.path.join(root_parent, "outputjson")
             os.makedirs(out_dir, exist_ok=True)
             out_path = os.path.join(out_dir, f"{base_name}.outputschema.json")
-            ir = build_outputschema(sd, out_path, args)
-            print(f"Wrote {out_path} with {len(ir.get('reading_order', []))} items.")
+            payload = build_outputschema(sd, out_path, args)
+            count = len(payload.get("pictures", []))
+            print(f"Wrote {payload.get('path', out_path)} with {count} vector picture(s).")
             processed += 1
     if processed == 0:
         raise SystemExit("No problem directories with JSON found to process.")

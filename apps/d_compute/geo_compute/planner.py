@@ -1,7 +1,8 @@
 ﻿from __future__ import annotations
 import json, os, numpy as np
-from geom_utils import v3, rotate, fit_into_box
-from templates import solve_quad_diaglen_ang, solve_square_with_ADE
+
+from .geom_utils import v3, rotate, fit_into_box
+from .templates import solve_quad_diaglen_ang, solve_square_with_ADE
 
 def load_spec(path:str):
     with open(path, "r", encoding="utf-8") as f:
