@@ -276,3 +276,4 @@ Scene (전체 영상)
 금지 개념: {고등 개념 이름}
 </범위>
 - Prefer importing libs.geo (geom_utils, angle_rules, templates, planner, scene_runtime) and emit a small Manim scene that subclasses GeometrySceneFromSpec with a SPEC dict instead of computing coordinates yourself.
+
