@@ -3,12 +3,29 @@
 from __future__ import annotations
 
 import json
+import os
 from dataclasses import dataclass
 from datetime import datetime
 from pathlib import Path
 from typing import Any, Dict, Optional
 
+import tomllib
+from dotenv import load_dotenv
+from openai import OpenAI
+
+from pipelines.utils import strip_code_fences
+
+BASE_DIR = Path(__file__).resolve().parent
+CONFIG_DIR = BASE_DIR.parent.parent / "configs"
+SYSTEM_PROMPT_PATH = BASE_DIR / "geo_system_prompt.txt"
+
 DEFAULT_BOX = {"min": [-6.0, -3.0], "max": [6.0, 3.0], "margin": 0.2}
+DEFAULT_NOTES = [
+    "Fill in the geometric constraints before running geo_compute.",
+    "Set 'type' to a supported template (e.g. quad_diag2len2ang).",
+]
+
+load_dotenv()
 
 
 @dataclass
@@ -29,6 +46,27 @@ def _load_json(path: Path) -> Any:
         return json.load(fh)
 
 
+def load_system_prompt() -> str:
+    if SYSTEM_PROMPT_PATH.exists():
+        return SYSTEM_PROMPT_PATH.read_text(encoding="utf-8")
+    return (
+        "You are a geometry spec assistant. Produce a JSON object describing the diagram."
+    )
+
+
+def _load_openai_config() -> Dict[str, Any]:
+    cfg_path = CONFIG_DIR / "openai.toml"
+    if not cfg_path.exists():
+        return {"model": "gpt-4o-mini", "temperature": 0.0}
+    with cfg_path.open("rb") as fh:
+        cfg = tomllib.load(fh)
+    section = cfg.get("geo_codegen") or cfg.get("default", {})
+    return {
+        "model": section.get("model", cfg.get("default", {}).get("model", "gpt-4o-mini")),
+        "temperature": float(section.get("temperature", cfg.get("default", {}).get("temperature", 0.0))),
+    }
+
+
 def _default_spec_template() -> Dict[str, Any]:
     return {
         "type": "__TBD__",
@@ -42,10 +80,7 @@ def _default_spec_template() -> Dict[str, Any]:
         "point_labels": {},
         "status": "draft",
         "meta": {
-            "notes": [
-                "Fill in the geometric constraints before running geo_compute.",
-                "Set 'type' to a supported template (e.g. quad_diag2len2ang).",
-            ]
+            "notes": list(DEFAULT_NOTES),
         },
     }
 
@@ -65,6 +100,103 @@ def _summarise_vector_payload(vector_path: Optional[Path]) -> Dict[str, Any]:
         summary["frame_size"] = payload.get("frame_size")
     summary["source"] = vector_path.name
     return summary
+
+
+def _ensure_spec_shape(spec: Dict[str, Any]) -> Dict[str, Any]:
+    if not isinstance(spec, dict):
+        spec = {}
+    spec.setdefault("type", "__TBD__")
+    spec.setdefault("seed", {})
+    spec.setdefault("angles", {})
+    spec.setdefault("lengths", {})
+    box = spec.get("box")
+    if not isinstance(box, dict):
+        box = DEFAULT_BOX.copy()
+    else:
+        box = {
+            "min": list(box.get("min", DEFAULT_BOX["min"])),
+            "max": list(box.get("max", DEFAULT_BOX["max"])),
+            "margin": float(box.get("margin", DEFAULT_BOX["margin"])),
+        }
+    spec["box"] = box
+    spec.setdefault("points", {})
+    spec.setdefault("scale", 1.0)
+    extras = spec.get("extras")
+    spec["extras"] = extras if isinstance(extras, list) else []
+    labels = spec.get("point_labels")
+    spec["point_labels"] = labels if isinstance(labels, dict) else {}
+    spec["status"] = spec.get("status") or "draft"
+    meta = spec.get("meta")
+    if not isinstance(meta, dict):
+        meta = {}
+    notes = meta.get("notes")
+    if not isinstance(notes, list) or not notes:
+        meta["notes"] = list(DEFAULT_NOTES)
+    spec["meta"] = meta
+    return spec
+
+
+def _generate_spec_via_llm(paths: SpecPaths) -> Optional[tuple[Dict[str, Any], Dict[str, Any]]]:
+    ocr_path = paths.problem_dir / "problem.json"
+    if not ocr_path.exists():
+        return None
+
+    try:
+        ocr_data = _load_json(ocr_path)
+    except Exception:
+        return None
+
+    vector_payload: Dict[str, Any] = {}
+    if paths.vector_path and paths.vector_path.exists():
+        try:
+            vector_payload = _load_json(paths.vector_path)
+        except Exception:
+            vector_payload = {}
+
+    api_key = os.getenv("OPENAI_API_KEY")
+    if not api_key:
+        return None
+
+    cfg = _load_openai_config()
+    client = OpenAI(api_key=api_key)
+
+    sections = [
+        "다음은 문제의 OCR JSON과 (있다면) 벡터 요약 데이터입니다.",
+        "이 정보를 바탕으로 spec.json 초안을 JSON 형태로 작성하세요.",
+        "출력은 JSON 하나만 포함해야 하며, 코드펜스나 설명을 덧붙이지 마세요.",
+        "[OCR JSON]\n" + json.dumps(ocr_data, ensure_ascii=False, indent=2),
+    ]
+    if vector_payload:
+        sections.append("[Vector Summary]\n" + json.dumps(vector_payload, ensure_ascii=False, indent=2))
+
+    messages = [
+        {"role": "system", "content": load_system_prompt()},
+        {"role": "user", "content": [{"type": "text", "text": "\n\n".join(sections)}]},
+    ]
+
+    try:
+        response = client.chat.completions.create(
+            model=cfg.get("model", "gpt-4o-mini"),
+            temperature=cfg.get("temperature", 0.0),
+            messages=messages,
+        )
+    except Exception:
+        return None
+
+    content = response.choices[0].message.content or ""
+    candidate_text = strip_code_fences(content).strip()
+    try:
+        spec_obj = json.loads(candidate_text)
+    except Exception:
+        return None
+
+    if not isinstance(spec_obj, dict):
+        return None
+
+    return spec_obj, {
+        "model": cfg.get("model"),
+        "temperature": cfg.get("temperature"),
+    }
 
 
 def generate_spec(
@@ -97,13 +229,33 @@ def generate_spec(
     if paths.spec_path.exists() and not overwrite:
         return _load_json(paths.spec_path)
 
-    spec = template.copy() if template else _default_spec_template()
+    llm_result: Optional[tuple[Dict[str, Any], Dict[str, Any]]] = None
+    if not template:
+        llm_result = _generate_spec_via_llm(paths)
+
+    if template:
+        spec = template.copy()
+        llm_meta: Optional[Dict[str, Any]] = None
+    elif llm_result:
+        spec, llm_meta = llm_result
+    else:
+        spec = _default_spec_template()
+        llm_meta = None
+
+    spec = _ensure_spec_shape(spec)
     meta = spec.setdefault("meta", {})
     meta["created_at"] = datetime.utcnow().isoformat() + "Z"
     meta["vector_summary"] = _summarise_vector_payload(paths.vector_path)
 
     if paths.vector_path:
         meta["vector_json"] = str(paths.vector_path)
+    if llm_result:
+        meta["generated_by"] = "llm"
+        meta.setdefault("llm", {}).update(llm_meta or {})
+    elif template:
+        meta.setdefault("generated_by", "template")
+    else:
+        meta.setdefault("generated_by", "default")
     spec["status"] = "draft"
 
     paths.spec_path.parent.mkdir(parents=True, exist_ok=True)

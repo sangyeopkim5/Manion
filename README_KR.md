@@ -97,28 +97,28 @@ graph TD
 
 ```bash
 # 1단계: OCR 처리
-python -m pipelines.cli_stage 1 --image-path problem.png --problem-name "test"
+python -m pipelines.cli_stage a_ocr --problem-name test --image problem.jpg
 
-# 2단계: 그래프 샘플링 (그림이 감지된 경우)
-python -m pipelines.cli_stage 2 --problem-dir "./temp_ocr_output/test/test"
+# 2단계: 그래프 샘플링 (vector.json 생성)
+python -m pipelines.cli_stage b_graphsampling --problem-name test
 
-# 3단계: 코드 생성
-python -m pipelines.cli_stage 3 \
-  --outputschema-path "outputschema.json" \
-  --image-paths "image.jpg" \
-  --output-dir "."
+# 3단계: LLM 기반 spec 작성
+python -m pipelines.cli_stage c_geo_codegen --problem-name test --force
 
-# 4단계: CAS 연산
-python -m pipelines.cli_stage 4 --code-text "$(cat codegen_output.py)"
+# 4단계: 결정적 기하 계산
+python -m pipelines.cli_stage d_geo_compute --problem-name test
 
-# 5단계: 최종 렌더링
-python -m pipelines.cli_stage 5 \
-  --manim-code "$(cat manim_draft.py)" \
-  --cas-results "cas_results.json" \
-  --output-path "final.py"
+# 5단계: Manim + CAS 코드 생성
+python -m pipelines.cli_stage e_cas_codegen --problem-name test --force
 
-# 6단계: 후처리 (신규!)
-python -m pipelines.cli_stage postproc --problem "test"
+# 6단계: CAS 실행
+python -m pipelines.cli_stage f_cas_compute --problem-name test
+
+# 7단계: 플레이스홀더 치환
+python -m pipelines.cli_stage g_render --problem-name test
+
+# 8단계: 후처리 (선택)
+python -m pipelines.cli_stage h_postproc --problem-name test
 ```
 
 ### 후처리 제어
@@ -177,9 +177,12 @@ manion-main/
 ├── 📂 apps/                    # 핵심 애플리케이션 모듈
 │   ├── a_ocr/                 # OCR 처리 (DotsOCR)
 │   ├── b_graphsampling/       # 벡터 그래픽 처리
-│   ├── c_codegen/            # 코드 생성 (GPT)
-│   ├── d_cas/                # 기호 연산 (SymPy)
-│   └── e_render/             # 최종 렌더링
+│   ├── c_geo_codegen/         # LLM 기반 spec 작성
+│   ├── d_geo_compute/         # 결정적 기하 계산기
+│   ├── e_cas_codegen/         # Manim+CAS 코드 생성
+│   ├── f_cas_compute/         # SymPy CAS 실행 도우미
+│   ├── g_render/              # 플레이스홀더 치환
+│   └── h_postproc/            # 선택적 후처리 스크립트
 ├── 📂 libs/                   # 공유 라이브러리
 │   ├── postproc/             # 🆕 후처리 모듈
 │   ├── schemas.py            # 데이터 모델
@@ -201,17 +204,24 @@ manion-main/
 파이프라인은 체계적으로 구성된 출력을 생성합니다:
 
 ```
+Probleminput/
+└── problem_name/
+    ├── problem.json              # OCR 결과
+    ├── problem.jpg               # 원본 이미지 복사본
+    ├── vector.json               # 도형 벡터화 결과 (B 단계)
+    ├── spec.json                 # 기하 스펙 (C/D 단계)
+    ├── manim_draft.py            # LLM 초안 코드 (E 단계)
+    ├── cas_jobs.json             # CAS 작업 목록
+    ├── cas_results.json          # SymPy 계산 결과
+    └── problem_final.py          # 플레이스홀더가 채워진 스크립트
+
 ManimcodeOutput/
 └── problem_name/
-    ├── problem_name.json          # OCR 결과
-    ├── problem_name.jpg           # 원본 이미지
-    ├── __pic_i*.jpg              # 추출된 그림 블록
-    ├── outputschema.json         # 벡터화된 그래픽 데이터
-    ├── problem_name.py           # 생성된 Manim 코드
-    ├── final_manimcode.py        # ✨ 후처리된 코드
-    ├── problem_name.mp4          # ✨ 렌더링된 애니메이션
-    └── proof.json                # ✨ 증명 검증 데이터
+    └── problem_name.py           # 렌더링 가능한 Manim 코드
 ```
+
+> ℹ️ 선택적 후처리 단계(`h_postproc`)가 실행되면 동일한 디렉터리에
+> `final_manimcode.py`, 렌더링된 영상, 증명 로그 등의 추가 산출물이 생성될 수 있습니다.
 
 ## 🛡️ 안전성 및 신뢰성
 
