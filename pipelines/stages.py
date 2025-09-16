@@ -207,14 +207,46 @@ def run_stage_b(paths: PipelinePaths) -> Dict[str, Any]:
     }
 
 
+def _has_pictures_in_ocr(problem_dir: Path) -> bool:
+    """OCR 결과에서 Picture가 있는지 확인"""
+    ocr_path = problem_dir / "problem.json"
+    if not ocr_path.exists():
+        return False
+    
+    try:
+        with ocr_path.open("r", encoding="utf-8") as f:
+            ocr_data = json.load(f)
+        
+        if isinstance(ocr_data, list):
+            return any(item.get("category") == "Picture" for item in ocr_data)
+        return False
+    except Exception:
+        return False
+
+
 def run_stage_c(paths: PipelinePaths, *, overwrite: bool = False) -> Dict[str, Any]:
-    vector_path = paths.vector_json if paths.vector_json.exists() else None
+    # Picture가 있는 경우에만 spec 생성 시도
+    if not _has_pictures_in_ocr(paths.problem_dir):
+        return {
+            "status": "skipped",
+            "reason": "No pictures found in OCR result",
+            "spec_path": str(paths.spec),
+        }
+    
     spec = generate_spec(
         paths.problem_dir,
         spec_path=paths.spec,
-        vector_json_path=vector_path,
         overwrite=overwrite,
     )
+    
+    # spec이 생성되지 않은 경우 (그래프인 경우)
+    if not spec or spec.get("status") != "draft":
+        return {
+            "status": "skipped",
+            "reason": "Graph detected, no spec generated",
+            "spec_path": str(paths.spec),
+        }
+    
     return {
         "status": spec.get("status", "draft"),
         "spec_path": str(paths.spec),
@@ -222,6 +254,14 @@ def run_stage_c(paths: PipelinePaths, *, overwrite: bool = False) -> Dict[str, A
 
 
 def run_stage_d(paths: PipelinePaths, *, overwrite: bool = True) -> Dict[str, Any]:
+    # spec.json이 없으면 스킵
+    if not paths.spec.exists():
+        return {
+            "status": "skipped",
+            "reason": "No spec.json found",
+            "spec_path": str(paths.spec),
+        }
+    
     spec = solve_in_problem_dir(paths.problem_dir, overwrite=overwrite)
     return {
         "status": spec.get("status", "solved"),
@@ -230,12 +270,14 @@ def run_stage_d(paths: PipelinePaths, *, overwrite: bool = True) -> Dict[str, An
 
 
 def run_stage_e(paths: PipelinePaths, *, force: bool = False) -> Dict[str, Any]:
+    # 이미지는 필수
     image = str(paths.ocr_visual) if paths.ocr_visual.exists() else None
     if image is None:
         raise FileNotFoundError("problem.jpg missing – run OCR stage first")
+    
     return run_cas_codegen(
         paths.problem_dir,
-        spec_path=paths.spec,
+        spec_path=paths.spec if paths.spec.exists() else None,
         ocr_json_path=paths.ocr_json,
         image_path=image,
         force=force,

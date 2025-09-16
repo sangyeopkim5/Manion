@@ -1,5 +1,7 @@
-"""CAS execution helpers for the deterministic pipeline."""
+"""
+CAS Module
+"""
 
-from .cas import run_cas_compute
+from .compute import run_cas, run_cas_compute, SAFE_FUNCS
 
-__all__ = ["run_cas_compute"]
+__all__ = ['run_cas', 'run_cas_compute', 'SAFE_FUNCS']

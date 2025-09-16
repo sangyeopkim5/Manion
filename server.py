@@ -59,6 +59,23 @@ class SpecUploadRequest(BaseModel):
     base_dir: Optional[str] = "Probleminput"
 
 
+def _has_pictures_in_ocr(problem_dir: Path) -> bool:
+    """OCR 결과에서 Picture가 있는지 확인"""
+    ocr_path = problem_dir / "problem.json"
+    if not ocr_path.exists():
+        return False
+    
+    try:
+        with ocr_path.open("r", encoding="utf-8") as f:
+            ocr_data = json.load(f)
+        
+        if isinstance(ocr_data, list):
+            return any(item.get("category") == "Picture" for item in ocr_data)
+        return False
+    except Exception:
+        return False
+
+
 def _run_single_stage(req: StageRequest) -> tuple[Stage, Dict[str, Any]]:
     stage = _parse_stage(req.stage)
     paths = PipelinePaths(Path(req.base_dir), req.problem_name)
@@ -68,6 +85,9 @@ def _run_single_stage(req: StageRequest) -> tuple[Stage, Dict[str, Any]]:
             raise HTTPException(status_code=400, detail="image_path required for OCR stage")
         return stage, run_stage_a(paths, image_path=req.image_path, overwrite=req.force)
     if stage == Stage.B_GRAPH:
+        # Picture가 있는 경우에만 실행
+        if not _has_pictures_in_ocr(paths.problem_dir):
+            return stage, {"status": "skipped", "reason": "No pictures found in OCR result"}
         return stage, run_stage_b(paths)
     if stage == Stage.C_GEO_CODEGEN:
         return stage, run_stage_c(paths, overwrite=req.force)

@@ -29,6 +29,23 @@ def _ensure_stage(stage: Stage | str) -> Stage:
         raise ValueError(f"unknown stage: {stage}") from exc
 
 
+def _has_pictures_in_ocr(problem_dir: Path) -> bool:
+    """OCR 결과에서 Picture가 있는지 확인"""
+    ocr_path = problem_dir / "problem.json"
+    if not ocr_path.exists():
+        return False
+    
+    try:
+        with ocr_path.open("r", encoding="utf-8") as f:
+            ocr_data = json.load(f)
+        
+        if isinstance(ocr_data, list):
+            return any(item.get("category") == "Picture" for item in ocr_data)
+        return False
+    except Exception:
+        return False
+
+
 def _execute_stage(
     stage: Stage,
     paths: PipelinePaths,
@@ -41,6 +58,9 @@ def _execute_stage(
             raise ValueError("OCR stage requires an image_path")
         return run_stage_a(paths, image_path=image_path, overwrite=force)
     if stage == Stage.B_GRAPH:
+        # Picture가 있는 경우에만 실행
+        if not _has_pictures_in_ocr(paths.problem_dir):
+            return {"status": "skipped", "reason": "No pictures found in OCR result"}
         return run_stage_b(paths)
     if stage == Stage.C_GEO_CODEGEN:
         return run_stage_c(paths, overwrite=force)

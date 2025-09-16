@@ -2,12 +2,13 @@
 
 from __future__ import annotations
 
+import base64
 import json
 import os
 from dataclasses import dataclass
 from datetime import datetime
 from pathlib import Path
-from typing import Any, Dict, Optional
+from typing import Any, Dict, List, Optional
 
 import tomllib
 from dotenv import load_dotenv
@@ -34,11 +35,6 @@ class SpecPaths:
 
     problem_dir: Path
     spec_path: Path
-    vector_path: Optional[Path] = None
-
-    @property
-    def draft_path(self) -> Path:
-        return self.problem_dir / "spec.draft.json"
 
 
 def _load_json(path: Path) -> Any:
@@ -85,21 +81,6 @@ def _default_spec_template() -> Dict[str, Any]:
     }
 
 
-def _summarise_vector_payload(vector_path: Optional[Path]) -> Dict[str, Any]:
-    summary: Dict[str, Any] = {}
-    if not vector_path or not vector_path.exists():
-        return summary
-
-    payload = _load_json(vector_path)
-    pictures = payload.get("pictures", []) if isinstance(payload, dict) else []
-    summary["picture_count"] = len(pictures)
-    summary["images"] = [p.get("image") for p in pictures if isinstance(p, dict)]
-    if "vectorizer" in payload:
-        summary["vectorizer"] = payload.get("vectorizer")
-    if "frame_size" in payload:
-        summary["frame_size"] = payload.get("frame_size")
-    summary["source"] = vector_path.name
-    return summary
 
 
 def _ensure_spec_shape(spec: Dict[str, Any]) -> Dict[str, Any]:
@@ -136,6 +117,29 @@ def _ensure_spec_shape(spec: Dict[str, Any]) -> Dict[str, Any]:
     return spec
 
 
+def _encode_image(path: Path) -> Optional[Dict[str, str]]:
+    """이미지를 base64로 인코딩하여 OpenAI API에 전송할 수 있는 형태로 변환"""
+    if not path.exists():
+        return None
+    mime = "image/jpeg"
+    ext = path.suffix.lower()
+    if ext == ".png":
+        mime = "image/png"
+    try:
+        data = base64.b64encode(path.read_bytes()).decode("utf-8")
+    except Exception:
+        return None
+    return {"type": "image_url", "image_url": {"url": f"data:{mime};base64,{data}"}}
+
+
+def _find_crop_images(problem_dir: Path) -> List[Path]:
+    """crop된 이미지 파일들을 찾아서 반환"""
+    crop_images = []
+    for pattern in ["*__pic_i*.jpg", "*__pic_i*.png", "*__pic_i*.jpeg"]:
+        crop_images.extend(sorted(problem_dir.glob(pattern)))
+    return crop_images
+
+
 def _generate_spec_via_llm(paths: SpecPaths) -> Optional[tuple[Dict[str, Any], Dict[str, Any]]]:
     ocr_path = paths.problem_dir / "problem.json"
     if not ocr_path.exists():
@@ -146,13 +150,7 @@ def _generate_spec_via_llm(paths: SpecPaths) -> Optional[tuple[Dict[str, Any], D
     except Exception:
         return None
 
-    vector_payload: Dict[str, Any] = {}
-    if paths.vector_path and paths.vector_path.exists():
-        try:
-            vector_payload = _load_json(paths.vector_path)
-        except Exception:
-            vector_payload = {}
-
+    # .env에서 GPT API 키 읽기
     api_key = os.getenv("OPENAI_API_KEY")
     if not api_key:
         return None
@@ -160,18 +158,23 @@ def _generate_spec_via_llm(paths: SpecPaths) -> Optional[tuple[Dict[str, Any], D
     cfg = _load_openai_config()
     client = OpenAI(api_key=api_key)
 
-    sections = [
-        "다음은 문제의 OCR JSON과 (있다면) 벡터 요약 데이터입니다.",
-        "이 정보를 바탕으로 spec.json 초안을 JSON 형태로 작성하세요.",
-        "출력은 JSON 하나만 포함해야 하며, 코드펜스나 설명을 덧붙이지 마세요.",
-        "[OCR JSON]\n" + json.dumps(ocr_data, ensure_ascii=False, indent=2),
+    # crop된 이미지 찾기
+    crop_images = _find_crop_images(paths.problem_dir)
+    
+    # 사용자 메시지 구성
+    user_content = [
+        {"type": "text", "text": "다음은 문제의 OCR JSON입니다. 이 정보를 바탕으로 geo_system_prompt에 따라 spec.json을 JSON 형태로 작성하세요. 다른 설명 없이 오직 schema만 반환하세요.\n\n[OCR JSON]\n" + json.dumps(ocr_data, ensure_ascii=False, indent=2)}
     ]
-    if vector_payload:
-        sections.append("[Vector Summary]\n" + json.dumps(vector_payload, ensure_ascii=False, indent=2))
+    
+    # crop된 이미지가 있으면 추가
+    for crop_image in crop_images:
+        encoded_image = _encode_image(crop_image)
+        if encoded_image:
+            user_content.append(encoded_image)
 
     messages = [
         {"role": "system", "content": load_system_prompt()},
-        {"role": "user", "content": [{"type": "text", "text": "\n\n".join(sections)}]},
+        {"role": "user", "content": user_content},
     ]
 
     try:
@@ -185,6 +188,11 @@ def _generate_spec_via_llm(paths: SpecPaths) -> Optional[tuple[Dict[str, Any], D
 
     content = response.choices[0].message.content or ""
     candidate_text = strip_code_fences(content).strip()
+    
+    # 그래프인 경우 빈 문자열이 반환됨
+    if not candidate_text or candidate_text.strip() == "":
+        return None
+    
     try:
         spec_obj = json.loads(candidate_text)
     except Exception:
@@ -203,7 +211,6 @@ def generate_spec(
     problem_dir: str | Path,
     *,
     spec_path: str | Path | None = None,
-    vector_json_path: str | Path | None = None,
     overwrite: bool = False,
     template: Optional[Dict[str, Any]] = None,
 ) -> Dict[str, Any]:
@@ -219,11 +226,7 @@ def generate_spec(
         spec_path = problem_dir_path / "spec.json"
     spec_path = Path(spec_path)
 
-    vector_path = Path(vector_json_path).expanduser().resolve() if vector_json_path else None
-    if vector_path and not vector_path.exists():
-        vector_path = None
-
-    paths = SpecPaths(problem_dir=problem_dir_path, spec_path=spec_path, vector_path=vector_path)
+    paths = SpecPaths(problem_dir=problem_dir_path, spec_path=spec_path)
     paths.problem_dir.mkdir(parents=True, exist_ok=True)
 
     if paths.spec_path.exists() and not overwrite:
@@ -245,10 +248,7 @@ def generate_spec(
     spec = _ensure_spec_shape(spec)
     meta = spec.setdefault("meta", {})
     meta["created_at"] = datetime.utcnow().isoformat() + "Z"
-    meta["vector_summary"] = _summarise_vector_payload(paths.vector_path)
 
-    if paths.vector_path:
-        meta["vector_json"] = str(paths.vector_path)
     if llm_result:
         meta["generated_by"] = "llm"
         meta.setdefault("llm", {}).update(llm_meta or {})
@@ -262,11 +262,6 @@ def generate_spec(
     with paths.spec_path.open("w", encoding="utf-8") as fh:
         json.dump(spec, fh, ensure_ascii=False, indent=2)
 
-    # Keep a pristine copy for manual iteration if we are creating from scratch.
-    if not paths.draft_path.exists():
-        with paths.draft_path.open("w", encoding="utf-8") as fh:
-            json.dump(spec, fh, ensure_ascii=False, indent=2)
-
     return spec
 
 
@@ -274,7 +269,6 @@ def ensure_spec(
     problem_dir: str | Path,
     *,
     spec_path: str | Path | None = None,
-    vector_json_path: str | Path | None = None,
 ) -> Dict[str, Any]:
     """Idempotent helper used by orchestration code.
 
@@ -293,6 +287,5 @@ def ensure_spec(
     return generate_spec(
         problem_dir_path,
         spec_path=spec_path,
-        vector_json_path=vector_json_path,
         overwrite=False,
     )

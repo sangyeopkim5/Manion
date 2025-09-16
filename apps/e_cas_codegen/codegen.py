@@ -5,6 +5,7 @@ from __future__ import annotations
 import base64
 import json
 import os
+import re
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Dict, Iterable, List, Optional
@@ -12,8 +13,6 @@ from typing import Any, Dict, Iterable, List, Optional
 import tomllib
 from dotenv import load_dotenv
 from openai import OpenAI
-
-from pipelines.utils import extract_jobs_and_code
 
 BASE_DIR = Path(__file__).resolve().parent
 CONFIG_DIR = BASE_DIR.parent.parent / "configs"
@@ -54,7 +53,7 @@ def _load_openai_config() -> Dict[str, Any]:
         return {"model": "gpt-4o-mini", "temperature": 0.0}
     with cfg_path.open("rb") as fh:
         cfg = tomllib.load(fh)
-    section = cfg.get("cas_codegen") or cfg.get("ceo_codegen", {})
+    section = cfg.get("cas_codegen") or cfg.get("default", {})
     default = cfg.get("default", {})
     model = section.get("model") or default.get("model") or "gpt-4o-mini"
     temperature = section.get("temperature", 0.0)
@@ -62,6 +61,7 @@ def _load_openai_config() -> Dict[str, Any]:
 
 
 def _encode_image(path: Path) -> Optional[Dict[str, str]]:
+    """이미지를 base64로 인코딩하여 OpenAI API에 전송할 수 있는 형태로 변환"""
     if not path.exists():
         return None
     mime = "image/jpeg"
@@ -75,16 +75,16 @@ def _encode_image(path: Path) -> Optional[Dict[str, str]]:
     return {"type": "image_url", "image_url": {"url": f"data:{mime};base64,{data}"}}
 
 
-def _gather_image_parts(paths: Iterable[Path]) -> List[Dict[str, Any]]:
-    parts: List[Dict[str, Any]] = []
-    for candidate in paths:
-        encoded = _encode_image(candidate)
-        if encoded:
-            parts.append(encoded)
-    return parts
+def _find_crop_images(problem_dir: Path) -> List[Path]:
+    """crop된 이미지 파일들을 찾아서 반환"""
+    crop_images = []
+    for pattern in ["*__pic_i*.jpg", "*__pic_i*.png", "*__pic_i*.jpeg"]:
+        crop_images.extend(sorted(problem_dir.glob(pattern)))
+    return crop_images
 
 
 def _select_problem_image(problem_dir: Path) -> Optional[Path]:
+    """문제 이미지 선택"""
     for name in ["problem.jpg", "problem_input.jpg", "problem_input.png"]:
         candidate = problem_dir / name
         if candidate.exists():
@@ -92,7 +92,50 @@ def _select_problem_image(problem_dir: Path) -> Optional[Path]:
     return None
 
 
+def _has_pictures_in_ocr(problem_dir: Path) -> bool:
+    """OCR 결과에서 Picture가 있는지 확인"""
+    ocr_path = problem_dir / "problem.json"
+    if not ocr_path.exists():
+        return False
+    
+    try:
+        with ocr_path.open("r", encoding="utf-8") as f:
+            ocr_data = json.load(f)
+        
+        if isinstance(ocr_data, list):
+            return any(item.get("category") == "Picture" for item in ocr_data)
+        return False
+    except Exception:
+        return False
+
+
+def extract_jobs_and_code(content: str) -> tuple[List[Dict[str, Any]], str]:
+    """---CAS-JOBS--- 섹션을 추출하여 CAS 작업과 Manim 코드를 분리"""
+    # ---CAS-JOBS--- 섹션 찾기
+    cas_section_pattern = r"---CAS-JOBS---\s*\n(.*?)(?=\n---|\Z)"
+    cas_match = re.search(cas_section_pattern, content, re.DOTALL)
+    
+    if cas_match:
+        cas_text = cas_match.group(1).strip()
+        # 나머지 부분이 Manim 코드
+        manim_code = content[:cas_match.start()].strip()
+        
+        try:
+            cas_jobs = json.loads(cas_text)
+            if not isinstance(cas_jobs, list):
+                cas_jobs = []
+        except json.JSONDecodeError:
+            cas_jobs = []
+    else:
+        # CAS 섹션이 없으면 전체를 Manim 코드로 간주
+        manim_code = content.strip()
+        cas_jobs = []
+    
+    return cas_jobs, manim_code
+
+
 def _placeholder_output(problem_dir: Path, reason: str) -> CodegenResult:
+    """플레이스홀더 출력 생성"""
     code_path = problem_dir / "codegen_output.py"
     manim_path = problem_dir / "manim_draft.py"
     jobs_path = problem_dir / "cas_jobs.json"
@@ -103,7 +146,7 @@ def _placeholder_output(problem_dir: Path, reason: str) -> CodegenResult:
         "from manim import *\n\n\n"
         "class ProblemScene(Scene):\n"
         "    def construct(self):\n"
-        "        self.add(Text('Fill in Manim code based on spec.json').scale(0.6))\n"
+        "        self.add(Text('Fill in Manim code based on problem').scale(0.6))\n"
     )
 
     code_path.write_text(placeholder + "\n---CAS-JOBS---\n[]\n", encoding="utf-8")
@@ -140,14 +183,19 @@ def run_cas_codegen(
     if image_candidate and not image_candidate.exists():
         image_candidate = _select_problem_image(problem_dir_path)
 
-    if not spec_path.exists():
-        raise FileNotFoundError(f"spec.json not found at {spec_path}")
     if not ocr_json_path.exists():
         raise FileNotFoundError(f"problem.json not found at {ocr_json_path}")
+    
+    # 이미지는 필수
+    if not image_candidate or not image_candidate.exists():
+        raise FileNotFoundError(f"image file not found - required for cas_codegen")
 
-    spec = json.loads(spec_path.read_text(encoding="utf-8"))
-    if spec.get("status") != "solved":
-        raise ValueError("spec.json must be solved by geo_compute before cas_codegen")
+    # spec.json은 선택적 (그래프인 경우 없을 수 있음)
+    spec = None
+    if spec_path.exists():
+        spec = json.loads(spec_path.read_text(encoding="utf-8"))
+        if spec.get("status") != "solved":
+            spec = None  # 해결되지 않은 spec은 무시
 
     ocr_data = json.loads(ocr_json_path.read_text(encoding="utf-8"))
 
@@ -170,16 +218,32 @@ def run_cas_codegen(
             return _placeholder_output(problem_dir_path, "OPENAI_API_KEY not configured").as_dict()
         client = OpenAI(api_key=api_key)
 
+    # 이미지 수집
     images: List[Path] = []
     if image_candidate:
         images.append(image_candidate)
+    
+    # crop 이미지들 추가 (Picture가 있는 경우)
+    if _has_pictures_in_ocr(problem_dir_path):
+        crop_images = _find_crop_images(problem_dir_path)
+        images.extend(crop_images)
 
+    # 사용자 메시지 구성
     user_sections = [
-        "문제의 OCR JSON과 해결된 spec.json을 참고하여 Manim 코드와 ---CAS-JOBS--- JSON 배열을 생성하세요.",
-        "spec.json에 기록된 좌표와 구조를 그대로 사용하여 도형을 구성하고, 추가 좌표를 임의로 만들지 마세요.",
-        "[OCR JSON]\n" + json.dumps(ocr_data, ensure_ascii=False, indent=2),
-        "[Solved Spec]\n" + json.dumps(spec, ensure_ascii=False, indent=2),
+        "문제의 OCR JSON을 참고하여 Manim 코드와 ---CAS-JOBS--- JSON 배열을 생성하세요.",
     ]
+    
+    if spec:
+        user_sections.extend([
+            "해결된 spec.json이 있으므로, spec.json에 기록된 좌표와 구조를 그대로 사용하여 도형을 구성하고, 추가 좌표를 임의로 만들지 마세요.",
+            "[OCR JSON]\n" + json.dumps(ocr_data, ensure_ascii=False, indent=2),
+            "[Solved Spec]\n" + json.dumps(spec, ensure_ascii=False, indent=2),
+        ])
+    else:
+        user_sections.extend([
+            "spec.json이 없으므로, OCR JSON과 이미지를 참고하여 문제를 해결하세요.",
+            "[OCR JSON]\n" + json.dumps(ocr_data, ensure_ascii=False, indent=2),
+        ])
 
     user_parts: List[Dict[str, Any]] = [{"type": "text", "text": "\n\n".join(user_sections)}]
     user_parts.extend(_gather_image_parts(images))
@@ -206,3 +270,13 @@ def run_cas_codegen(
     jobs_path.write_text(json.dumps(jobs_raw, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
 
     return CodegenResult(code_path, manim_path, jobs_path, jobs_raw, manim_code, "generated").as_dict()
+
+
+def _gather_image_parts(paths: Iterable[Path]) -> List[Dict[str, Any]]:
+    """이미지들을 OpenAI API 형식으로 변환"""
+    parts: List[Dict[str, Any]] = []
+    for candidate in paths:
+        encoded = _encode_image(candidate)
+        if encoded:
+            parts.append(encoded)
+    return parts
