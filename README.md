@@ -177,9 +177,12 @@ manion-main/
 ├── 📂 apps/                    # Core application modules
 │   ├── a_ocr/                 # OCR processing (DotsOCR)
 │   ├── b_graphsampling/       # Vector graphics processing
-│   ├── c_codegen/            # Code generation (GPT)
-│   ├── d_cas/                # Symbolic computation (SymPy)
-│   └── e_render/             # Final rendering
+│   ├── c_geo_codegen/       # Spec drafting (LLM assisted)
+│   ├── d_geo_compute/       # Deterministic geometry solver
+│   ├── e_cas_codegen/       # Manim scene + CAS prompt orchestration
+│   ├── f_cas_compute/       # SymPy sandbox execution
+│   ├── g_render/            # Placeholder filling and final code
+│   └── h_postproc/          # Optional LLM post-processing
 ├── 📂 libs/                   # Shared libraries
 │   ├── postproc/             # 🆕 Post-processing module
 │   ├── schemas.py            # Data models
