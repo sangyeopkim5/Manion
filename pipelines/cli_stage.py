@@ -56,13 +56,13 @@ def main() -> None:
         result = run_stage_c(paths, overwrite=args.force)
     elif stage == Stage.D_GEO_COMPUTE:
         result = run_stage_d(paths, overwrite=args.force)
-    elif stage == Stage.E_CEO_CODEGEN:
+    elif stage == Stage.E_CAS_CODEGEN:
         result = run_stage_e(paths, force=args.force)
-    elif stage == Stage.F_CEO_COMPUTE:
+    elif stage == Stage.F_CAS_COMPUTE:
         result = run_stage_f(paths, overwrite=args.force)
     elif stage == Stage.G_RENDER:
         result = run_stage_g(paths)
-    elif stage == Stage.H_POSTPROCESS:
+    elif stage == Stage.H_POSTPROC:
         res = run_stage_h(paths)
         result = res if res is not None else {"status": "skipped"}
     else:  # pragma: no cover - defensive

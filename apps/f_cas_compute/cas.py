@@ -7,7 +7,7 @@ from pathlib import Path
 from typing import Iterable, List, Dict, Any
 
 from libs.schemas import CASJob
-from apps.d_compute.cas_compute import run_cas as _run_cas
+from .cas_core import run_cas as _run_cas
 
 
 def _coerce_jobs(raw_jobs: Iterable[dict | CASJob]) -> List[CASJob]:
@@ -20,7 +20,7 @@ def _coerce_jobs(raw_jobs: Iterable[dict | CASJob]) -> List[CASJob]:
     return jobs
 
 
-def run_ceo_cas(
+def run_cas_compute(
     problem_dir: str | Path,
     *,
     cas_jobs_path: str | Path | None = None,

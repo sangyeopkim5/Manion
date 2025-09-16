@@ -41,7 +41,7 @@ class E2ERequest(BaseModel):
     problem_name: Optional[str] = None
     base_dir: Optional[str] = "Probleminput"
     start_stage: Optional[str] = Stage.A_OCR.value
-    end_stage: Optional[str] = Stage.H_POSTPROCESS.value
+    end_stage: Optional[str] = Stage.H_POSTPROC.value
     force: bool = False
 
 
@@ -73,13 +73,13 @@ def _run_single_stage(req: StageRequest) -> tuple[Stage, Dict[str, Any]]:
         return stage, run_stage_c(paths, overwrite=req.force)
     if stage == Stage.D_GEO_COMPUTE:
         return stage, run_stage_d(paths, overwrite=req.force)
-    if stage == Stage.E_CEO_CODEGEN:
+    if stage == Stage.E_CAS_CODEGEN:
         return stage, run_stage_e(paths, force=req.force)
-    if stage == Stage.F_CEO_COMPUTE:
+    if stage == Stage.F_CAS_COMPUTE:
         return stage, run_stage_f(paths, overwrite=req.force)
     if stage == Stage.G_RENDER:
         return stage, run_stage_g(paths)
-    if stage == Stage.H_POSTPROCESS:
+    if stage == Stage.H_POSTPROC:
         result = run_stage_h(paths)
         return stage, result if result is not None else {"status": "skipped"}
     raise HTTPException(status_code=400, detail=f"Unsupported stage: {req.stage}")
@@ -88,7 +88,7 @@ def _run_single_stage(req: StageRequest) -> tuple[Stage, Dict[str, Any]]:
 @app.post("/pipeline/e2e")
 def pipeline_e2e(req: E2ERequest) -> Dict[str, Any]:
     start = _parse_stage(req.start_stage) if req.start_stage else Stage.A_OCR
-    end = _parse_stage(req.end_stage) if req.end_stage else Stage.H_POSTPROCESS
+    end = _parse_stage(req.end_stage) if req.end_stage else Stage.H_POSTPROC
 
     try:
         result = run_e2e(

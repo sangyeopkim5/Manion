@@ -87,22 +87,10 @@ def build_outputschema(
 ) -> Dict[str, Any]:
     """Generate vector anchors for every Picture block discovered in the OCR JSON.
 
-    Historically this function injected the first crop image's anchors directly
-    back into the OCR JSON.  The deterministic pipeline now requires the
-    complete vectorisation result to be stored separately so that downstream
-    geo stages can reason about the diagram independent from OCR text.  The
-    behaviour is therefore extended as follows:
-
-    * ``problem_dir`` is expected to contain the OCR outputs produced by
-      :mod:`apps.a_ocr` – notably ``problem.json`` and optional crop images
-      named ``problem__pic_i*.jpg``.
-    * every ``Picture`` block receives a ``vector_anchors`` payload built via
-      :func:`apps.b_graphsampling.anchor_ir.build_anchor_item`.
-    * a consolidated ``problem_vector.json`` snapshot is written so that later
-      stages can reference only the geometric information.
-
-    The function still returns the patched OCR JSON object for backwards
-    compatibility with older callers.
+    The deterministic geometry workflow now persists vector information in a
+    dedicated ``vector.json`` file instead of mutating ``problem.json``.  This
+    helper therefore extracts the minimal metadata required to reconstruct the
+    diagram without touching the original OCR artefacts.
     """
 
     problem_dir_path = Path(problem_dir).expanduser().resolve()
@@ -113,7 +101,7 @@ def build_outputschema(
         [
             p
             for p in problem_dir_path.glob("*.json")
-            if "__pic_i" not in p.name and not p.name.endswith("_vector.json")
+            if "__pic_i" not in p.name and p.name != "vector.json"
         ]
     )
     if not json_files:
@@ -170,19 +158,15 @@ def build_outputschema(
             print(f"[b_graphsampling] WARN: failed to vectorise {crop_path}: {exc}")
             continue
 
-        picture["vector_anchors"] = anchor_item
         vector_records.append(
             {
                 "picture_index": idx,
                 "picture_id": picture.get("id") or picture.get("uuid") or f"picture_{idx}",
                 "image": Path(crop_path).name,
+                "bbox": picture.get("bbox"),
                 "anchors": anchor_item,
             }
         )
-
-    # Persist the patched OCR JSON so downstream stages read the enriched data.
-    with original_json_path.open("w", encoding="utf-8") as f:
-        json.dump(original_data, f, ensure_ascii=False, indent=2)
 
     vector_payload = {
         "problem": problem_dir_path.name,
@@ -198,7 +182,7 @@ def build_outputschema(
         vector_output_path = Path(output_path)
 
     if vector_output_path is None:
-        vector_output_path = problem_dir_path / f"{problem_dir_path.name}_vector.json"
+        vector_output_path = problem_dir_path / "vector.json"
     else:
         vector_output_path = Path(vector_output_path)
 
@@ -219,9 +203,9 @@ def is_problem_dir(path: str) -> bool:
 def main():
     import argparse
 
-    parser = argparse.ArgumentParser(description="Build outputschema.json from a problem directory")
+    parser = argparse.ArgumentParser(description="Generate vector.json from a problem directory")
     parser.add_argument("problem_dir", help="Path to the problem directory containing JSON/MD/Image")
-    parser.add_argument("--out", default=None, help="Output schema JSON path (defaults to parent/outputjson/<problem_name>.outputschema.json)")
+    parser.add_argument("--out", default=None, help="Vector JSON output path (defaults to <problem_dir>/vector.json)")
     parser.add_argument("--emit-anchors", action="store_true", help="For Picture items, attach anchorIR (raster_with_anchors).")
     parser.add_argument("--points-per-path", type=int, default=600)
     parser.add_argument("--vectorizer", choices=["potrace","inkscape"], default="potrace")
@@ -234,12 +218,7 @@ def main():
     if is_problem_dir(target):
         out_path = args.out
         if out_path is None:
-            base_name = os.path.basename(os.path.normpath(target))
-            problem_parent = os.path.dirname(target)
-            root_parent = os.path.dirname(problem_parent)
-            out_dir = os.path.join(root_parent, "outputjson")
-            os.makedirs(out_dir, exist_ok=True)
-            out_path = os.path.join(out_dir, f"{base_name}.outputschema.json")
+            out_path = os.path.join(target, "vector.json")
         payload = build_outputschema(target, out_path, args)
         count = len(payload.get("pictures", []))
         print(f"Wrote {payload.get('path', out_path)} with {count} vector picture(s).")
@@ -250,11 +229,7 @@ def main():
     processed = 0
     for sd in subdirs:
         if is_problem_dir(sd):
-            base_name = os.path.basename(os.path.normpath(sd))
-            root_parent = os.path.dirname(target)
-            out_dir = os.path.join(root_parent, "outputjson")
-            os.makedirs(out_dir, exist_ok=True)
-            out_path = os.path.join(out_dir, f"{base_name}.outputschema.json")
+            out_path = os.path.join(sd, "vector.json")
             payload = build_outputschema(sd, out_path, args)
             count = len(payload.get("pictures", []))
             print(f"Wrote {payload.get('path', out_path)} with {count} vector picture(s).")

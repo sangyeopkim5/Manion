@@ -1,5 +1,6 @@
 from typing import List
 import re
+from typing import List
 from sympy import (
     simplify,
     latex,

@@ -19,8 +19,8 @@ from apps.a_ocr.tools.picture_ocr_pipeline import run_pipeline as run_picture_oc
 from apps.b_graphsampling.builder import build_outputschema
 from apps.c_geo_codegen import generate_spec
 from apps.d_geo_compute import solve_in_problem_dir
-from apps.e_ceo_codegen import run_ceo_codegen
-from apps.f_ceo_compute import run_ceo_cas
+from apps.e_cas_codegen import run_cas_codegen
+from apps.f_cas_compute import run_cas_compute
 from apps.g_render import fill_placeholders
 from pipelines.utils import contains_placeholder
 
@@ -30,10 +30,10 @@ class Stage(Enum):
     B_GRAPH = "b_graphsampling"
     C_GEO_CODEGEN = "c_geo_codegen"
     D_GEO_COMPUTE = "d_geo_compute"
-    E_CEO_CODEGEN = "e_ceo_codegen"
-    F_CEO_COMPUTE = "f_ceo_compute"
+    E_CAS_CODEGEN = "e_cas_codegen"
+    F_CAS_COMPUTE = "f_cas_compute"
     G_RENDER = "g_render"
-    H_POSTPROCESS = "h_postprocess"
+    H_POSTPROC = "h_postproc"
 
     def __str__(self) -> str:  # pragma: no cover - debugging helper
         return self.value
@@ -44,10 +44,10 @@ STAGE_ORDER: List[Stage] = [
     Stage.B_GRAPH,
     Stage.C_GEO_CODEGEN,
     Stage.D_GEO_COMPUTE,
-    Stage.E_CEO_CODEGEN,
-    Stage.F_CEO_COMPUTE,
+    Stage.E_CAS_CODEGEN,
+    Stage.F_CAS_COMPUTE,
     Stage.G_RENDER,
-    Stage.H_POSTPROCESS,
+    Stage.H_POSTPROC,
 ]
 
 
@@ -75,7 +75,7 @@ class PipelinePaths:
 
     @property
     def vector_json(self) -> Path:
-        return self.problem_dir / f"{self.problem_name}_vector.json"
+        return self.problem_dir / "vector.json"
 
     @property
     def spec(self) -> Path:
@@ -230,20 +230,20 @@ def run_stage_d(paths: PipelinePaths, *, overwrite: bool = True) -> Dict[str, An
 
 
 def run_stage_e(paths: PipelinePaths, *, force: bool = False) -> Dict[str, Any]:
-    vector_path = paths.vector_json if paths.vector_json.exists() else None
-    result = run_ceo_codegen(
+    image = str(paths.ocr_visual) if paths.ocr_visual.exists() else None
+    if image is None:
+        raise FileNotFoundError("problem.jpg missing – run OCR stage first")
+    return run_cas_codegen(
         paths.problem_dir,
         spec_path=paths.spec,
         ocr_json_path=paths.ocr_json,
-        vector_json_path=vector_path,
-        image_paths=None,
+        image_path=image,
         force=force,
     )
-    return result
 
 
 def run_stage_f(paths: PipelinePaths, *, overwrite: bool = True) -> Dict[str, Any]:
-    return run_ceo_cas(
+    return run_cas_compute(
         paths.problem_dir,
         cas_jobs_path=paths.cas_jobs,
         output_path=paths.cas_results,
@@ -271,7 +271,7 @@ def _load_cas_results(path: Path) -> List[CASResult]:
 
 def run_stage_g(paths: PipelinePaths) -> Dict[str, Any]:
     if not paths.manim_draft.exists():
-        raise FileNotFoundError("manim_draft.py missing – run ceo_codegen first")
+        raise FileNotFoundError("manim_draft.py missing – run cas_codegen first")
 
     manim_code = paths.manim_draft.read_text(encoding="utf-8")
     cas_results = _load_cas_results(paths.cas_results)

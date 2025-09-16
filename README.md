@@ -97,28 +97,28 @@ Run specific pipeline stages independently:
 
 ```bash
 # Stage 1: OCR Processing
-python -m pipelines.cli_stage 1 --image-path problem.png --problem-name "test"
+python -m pipelines.cli_stage a_ocr --problem-name test --image problem.jpg
 
-# Stage 2: Graph Sampling (if pictures detected)
-python -m pipelines.cli_stage 2 --problem-dir "./temp_ocr_output/test/test"
+# Stage B: Graph Sampling (vector.json only)
+python -m pipelines.cli_stage b_graphsampling --problem-name test
 
-# Stage 3: Code Generation
-python -m pipelines.cli_stage 3 \
-  --outputschema-path "outputschema.json" \
-  --image-paths "image.jpg" \
-  --output-dir "."
+# Stage C: Spec Drafting via LLM
+python -m pipelines.cli_stage c_geo_codegen --problem-name test --force
 
-# Stage 4: CAS Computation
-python -m pipelines.cli_stage 4 --code-text "$(cat codegen_output.py)"
+# Stage D: Deterministic Geometry Solve
+python -m pipelines.cli_stage d_geo_compute --problem-name test
 
-# Stage 5: Final Rendering
-python -m pipelines.cli_stage 5 \
-  --manim-code "$(cat manim_draft.py)" \
-  --cas-results "cas_results.json" \
-  --output-path "final.py"
+# Stage E: Manim + CAS Code Generation
+python -m pipelines.cli_stage e_cas_codegen --problem-name test --force
 
-# Stage 6: Post-processing (NEW!)
-python -m pipelines.cli_stage postproc --problem "test"
+# Stage F: CAS Execution
+python -m pipelines.cli_stage f_cas_compute --problem-name test
+
+# Stage G: Placeholder Rendering
+python -m pipelines.cli_stage g_render --problem-name test
+
+# Stage H: Optional Post-processing
+python -m pipelines.cli_stage h_postproc --problem-name test
 ```
 
 ### Post-processing Control
@@ -177,9 +177,12 @@ manion-main/
 ├── 📂 apps/                    # Core application modules
 │   ├── a_ocr/                 # OCR processing (DotsOCR)
 │   ├── b_graphsampling/       # Vector graphics processing
-│   ├── c_codegen/            # Code generation (GPT)
-│   ├── d_cas/                # Symbolic computation (SymPy)
-│   └── e_render/             # Final rendering
+│   ├── c_geo_codegen/         # LLM-assisted spec authoring
+│   ├── d_geo_compute/         # Deterministic geometry solver
+│   ├── e_cas_codegen/         # Manim + CAS code generation
+│   ├── f_cas_compute/         # SymPy CAS execution helpers
+│   ├── g_render/              # Placeholder replacement
+│   └── h_postproc/            # Optional polishing scripts
 ├── 📂 libs/                   # Shared libraries
 │   ├── postproc/             # 🆕 Post-processing module
 │   ├── schemas.py            # Data models
@@ -201,17 +204,25 @@ manion-main/
 The pipeline generates organized outputs:
 
 ```
+Probleminput/
+└── problem_name/
+    ├── problem.json              # OCR results
+    ├── problem.jpg               # Original image copy
+    ├── vector.json               # Diagram vectorisation (stage B)
+    ├── spec.json                 # Geometry specification (stage C/D)
+    ├── manim_draft.py            # Raw LLM output (stage E)
+    ├── cas_jobs.json             # Requested CAS evaluations
+    ├── cas_results.json          # SymPy execution results
+    └── problem_final.py          # Placeholder-filled script
+
 ManimcodeOutput/
 └── problem_name/
-    ├── problem_name.json          # OCR results
-    ├── problem_name.jpg           # Original image
-    ├── __pic_i*.jpg              # Extracted picture blocks
-    ├── outputschema.json         # Vectorized graphics data
-    ├── problem_name.py           # Generated Manim code
-    ├── final_manimcode.py        # ✨ Post-processed code
-    ├── problem_name.mp4          # ✨ Rendered animation
-    └── proof.json                # ✨ Proof validation data
+    └── problem_name.py           # Exported Manim scene ready to render
 ```
+
+> ℹ️ The optional post-processing stage (`h_postproc`) may produce additional
+> artefacts such as `final_manimcode.py`, rendered videos and proof logs under
+> the same directory.
 
 ## 🛡️ Safety & Reliability
 

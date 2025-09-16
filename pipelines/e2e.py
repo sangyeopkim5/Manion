@@ -46,13 +46,13 @@ def _execute_stage(
         return run_stage_c(paths, overwrite=force)
     if stage == Stage.D_GEO_COMPUTE:
         return run_stage_d(paths, overwrite=force)
-    if stage == Stage.E_CEO_CODEGEN:
+    if stage == Stage.E_CAS_CODEGEN:
         return run_stage_e(paths, force=force)
-    if stage == Stage.F_CEO_COMPUTE:
+    if stage == Stage.F_CAS_COMPUTE:
         return run_stage_f(paths, overwrite=force)
     if stage == Stage.G_RENDER:
         return run_stage_g(paths)
-    if stage == Stage.H_POSTPROCESS:
+    if stage == Stage.H_POSTPROC:
         result = run_stage_h(paths)
         return result if result is not None else {"status": "skipped"}
     raise ValueError(f"Unsupported stage: {stage}")
