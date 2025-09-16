@@ -204,7 +204,7 @@ manion-main/
 파이프라인은 체계적으로 구성된 출력을 생성합니다:
 
 ```
-Probleminput/
+ManimcodeOutput/
 └── problem_name/
     ├── problem.json              # OCR 결과
     ├── problem.jpg               # 원본 이미지 복사본
@@ -213,10 +213,7 @@ Probleminput/
     ├── manim_draft.py            # LLM 초안 코드 (E 단계)
     ├── cas_jobs.json             # CAS 작업 목록
     ├── cas_results.json          # SymPy 계산 결과
-    └── problem_final.py          # 플레이스홀더가 채워진 스크립트
-
-ManimcodeOutput/
-└── problem_name/
+    ├── problem_final.py          # 플레이스홀더가 채워진 스크립트
     └── problem_name.py           # 렌더링 가능한 Manim 코드
 ```
 

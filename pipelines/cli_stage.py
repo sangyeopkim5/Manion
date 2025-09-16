@@ -36,7 +36,7 @@ def main() -> None:
     parser = argparse.ArgumentParser(description="Run a single pipeline stage")
     parser.add_argument("stage", help="Stage identifier (e.g. a_ocr, b_graphsampling)")
     parser.add_argument("--problem-name", required=True, help="Problem identifier")
-    parser.add_argument("--base-dir", default="Probleminput", help="Root directory for pipeline outputs")
+    parser.add_argument("--base-dir", default="ManimcodeOutput", help="Root directory for pipeline outputs")
     parser.add_argument("--image", help="Input image (required for stage a)")
     parser.add_argument("--force", action="store_true", help="Overwrite existing artefacts")
 

@@ -39,7 +39,7 @@ def _parse_stage(value: str) -> Stage:
 class E2ERequest(BaseModel):
     image_path: Optional[str] = None
     problem_name: Optional[str] = None
-    base_dir: Optional[str] = "Probleminput"
+    base_dir: Optional[str] = "ManimcodeOutput"
     start_stage: Optional[str] = Stage.A_OCR.value
     end_stage: Optional[str] = Stage.H_POSTPROC.value
     force: bool = False
@@ -48,7 +48,7 @@ class E2ERequest(BaseModel):
 class StageRequest(BaseModel):
     stage: str
     problem_name: str
-    base_dir: Optional[str] = "Probleminput"
+    base_dir: Optional[str] = "ManimcodeOutput"
     image_path: Optional[str] = None
     force: bool = False
 
@@ -56,7 +56,7 @@ class StageRequest(BaseModel):
 class SpecUploadRequest(BaseModel):
     problem_name: str
     spec: Dict[str, Any]
-    base_dir: Optional[str] = "Probleminput"
+    base_dir: Optional[str] = "ManimcodeOutput"
 
 
 def _has_pictures_in_ocr(problem_dir: Path) -> bool:
@@ -114,7 +114,7 @@ def pipeline_e2e(req: E2ERequest) -> Dict[str, Any]:
         result = run_e2e(
             image_path=req.image_path,
             problem_name=req.problem_name,
-            base_dir=req.base_dir or "Probleminput",
+            base_dir=req.base_dir or "ManimcodeOutput",
             start_stage=start,
             end_stage=end,
             force=req.force,
@@ -144,7 +144,7 @@ def upload_spec(req: SpecUploadRequest) -> Dict[str, Any]:
 
 
 @app.get("/pipeline/spec")
-def read_spec(problem_name: str, base_dir: str = "Probleminput") -> Dict[str, Any]:
+def read_spec(problem_name: str, base_dir: str = "ManimcodeOutput") -> Dict[str, Any]:
     paths = PipelinePaths(Path(base_dir), problem_name)
     if not paths.spec.exists():
         raise HTTPException(status_code=404, detail="spec.json not found")

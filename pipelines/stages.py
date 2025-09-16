@@ -198,7 +198,6 @@ def run_stage_b(paths: PipelinePaths) -> Dict[str, Any]:
         str(paths.problem_dir),
         str(paths.vector_json),
         args=args,
-        vector_output_path=str(paths.vector_json),
     )
     return {
         "status": "ok",
@@ -262,11 +261,32 @@ def run_stage_d(paths: PipelinePaths, *, overwrite: bool = True) -> Dict[str, An
             "spec_path": str(paths.spec),
         }
     
-    spec = solve_in_problem_dir(paths.problem_dir, overwrite=overwrite)
-    return {
-        "status": spec.get("status", "solved"),
-        "spec_path": str(paths.spec),
-    }
+    try:
+        spec = solve_in_problem_dir(paths.problem_dir, overwrite=overwrite)
+        return {
+            "status": spec.get("status", "solved"),
+            "spec_path": str(paths.spec),
+        }
+    except Exception as e:
+        # 에러 발생 시 GPT로 자동 수정 시도
+        print(f"[STAGE_D] Error occurred: {e}")
+        print("[STAGE_D] Attempting error correction with GPT...")
+        
+        try:
+            from apps.d_geo_compute.error_handler import retry_with_fix
+            result = retry_with_fix(
+                paths.problem_dir,
+                paths.spec,
+                str(e)
+            )
+            return result
+        except Exception as correction_error:
+            print(f"[STAGE_D] Error correction failed: {correction_error}")
+            return {
+                "status": "error",
+                "error": f"Original error: {e}. Correction failed: {correction_error}",
+                "spec_path": str(paths.spec),
+            }
 
 
 def run_stage_e(paths: PipelinePaths, *, force: bool = False) -> Dict[str, Any]:
@@ -285,12 +305,35 @@ def run_stage_e(paths: PipelinePaths, *, force: bool = False) -> Dict[str, Any]:
 
 
 def run_stage_f(paths: PipelinePaths, *, overwrite: bool = True) -> Dict[str, Any]:
-    return run_cas_compute(
-        paths.problem_dir,
-        cas_jobs_path=paths.cas_jobs,
-        output_path=paths.cas_results,
-        overwrite=overwrite,
-    )
+    try:
+        return run_cas_compute(
+            paths.problem_dir,
+            cas_jobs_path=paths.cas_jobs,
+            output_path=paths.cas_results,
+            overwrite=overwrite,
+        )
+    except Exception as e:
+        # 에러 발생 시 GPT로 자동 수정 시도
+        print(f"[STAGE_F] Error occurred: {e}")
+        print("[STAGE_F] Attempting error correction with GPT...")
+        
+        try:
+            from apps.f_cas_compute.error_handler import retry_with_fix
+            result = retry_with_fix(
+                paths.problem_dir,
+                paths.cas_jobs,
+                paths.cas_results,
+                str(e)
+            )
+            return result
+        except Exception as correction_error:
+            print(f"[STAGE_F] Error correction failed: {correction_error}")
+            return {
+                "status": "error",
+                "error": f"Original error: {e}. Correction failed: {correction_error}",
+                "jobs_path": str(paths.cas_jobs),
+                "output_path": str(paths.cas_results),
+            }
 
 
 def _load_cas_results(path: Path) -> List[CASResult]:
@@ -319,11 +362,6 @@ def run_stage_g(paths: PipelinePaths) -> Dict[str, Any]:
     cas_results = _load_cas_results(paths.cas_results)
     final = fill_placeholders(manim_code, cas_results)
     paths.final_code.write_text(final.manim_code_final, encoding="utf-8")
-
-    legacy_dir = Path("ManimcodeOutput") / paths.problem_name
-    legacy_dir.mkdir(parents=True, exist_ok=True)
-    legacy_file = legacy_dir / f"{paths.problem_name}.py"
-    legacy_file.write_text(final.manim_code_final, encoding="utf-8")
 
     return {
         "status": "rendered",
@@ -360,7 +398,7 @@ def _load_postproc_conf() -> Dict[str, Any]:
     }
 
 
-def run_postproc_stage(problem_name: str) -> Optional[Dict[str, Any]]:
+def run_postproc_stage(problem_name: str, base_dir: Path) -> Optional[Dict[str, Any]]:
     conf = _load_postproc_conf()
     if not conf["enabled"]:
         return None
@@ -371,8 +409,7 @@ def run_postproc_stage(problem_name: str) -> Optional[Dict[str, Any]]:
     except Exception:
         return None
 
-    base_dir = Path("ManimcodeOutput") / problem_name
-    input_py = base_dir / f"{problem_name}.py"
+    input_py = base_dir / problem_name / f"{problem_name}.py"
     if not input_py.exists():
         return None
 
@@ -396,4 +433,4 @@ def run_postproc_stage(problem_name: str) -> Optional[Dict[str, Any]]:
 
 
 def run_stage_h(paths: PipelinePaths) -> Optional[Dict[str, Any]]:
-    return run_postproc_stage(paths.problem_name)
+    return run_postproc_stage(paths.problem_name, paths.problem_dir.parent)

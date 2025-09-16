@@ -1,0 +1,2 @@
+Fix JSON format errors only. Don't change content or values.
+Return valid JSON array.

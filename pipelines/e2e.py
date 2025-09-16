@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import json
 from pathlib import Path
 from typing import Any, Dict, List, Optional
 
@@ -82,7 +83,7 @@ def run_e2e(
     image_path: Optional[str] = None,
     *,
     problem_name: Optional[str] = None,
-    base_dir: str | Path = "Probleminput",
+    base_dir: str | Path = "ManimcodeOutput",
     start_stage: Stage | str = Stage.A_OCR,
     end_stage: Optional[Stage | str] = None,
     force: bool = False,

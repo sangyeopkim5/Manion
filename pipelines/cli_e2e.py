@@ -50,7 +50,7 @@ Examples:
     parser.add_argument("image_path", nargs="?", help="Input image to process")
     parser.add_argument("--problem-name", help="Identifier for the problem")
     parser.add_argument("--problem-dir", help="Existing problem directory")
-    parser.add_argument("--base-dir", default="Probleminput", help="Root directory for pipeline outputs")
+    parser.add_argument("--base-dir", default="ManimcodeOutput", help="Root directory for pipeline outputs")
     parser.add_argument("--from-stage", help="Start from this stage (e.g. a_ocr, c_geo_codegen)")
     parser.add_argument("--to-stage", help="Stop after this stage")
     parser.add_argument("--geo", action="store_true", help="Shortcut for --from-stage c_geo_codegen")

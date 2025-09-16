@@ -204,7 +204,7 @@ manion-main/
 The pipeline generates organized outputs:
 
 ```
-Probleminput/
+ManimcodeOutput/
 └── problem_name/
     ├── problem.json              # OCR results
     ├── problem.jpg               # Original image copy
@@ -213,10 +213,7 @@ Probleminput/
     ├── manim_draft.py            # Raw LLM output (stage E)
     ├── cas_jobs.json             # Requested CAS evaluations
     ├── cas_results.json          # SymPy execution results
-    └── problem_final.py          # Placeholder-filled script
-
-ManimcodeOutput/
-└── problem_name/
+    ├── problem_final.py          # Placeholder-filled script
     └── problem_name.py           # Exported Manim scene ready to render
 ```
 
