@@ -27,3 +27,144 @@ def scale_into_box(points:dict, box):
     order = list(points.keys())
     arr, s = fit_into_box([points[k] for k in order], box_min, box_max, margin=box.get("margin",0.2))
     return {k:arr[i] for i,k in enumerate(order)}, s
+
+
+def solve_in_problem_dir(problem_dir, overwrite=True):
+    """Solve geometric problems in a problem directory.
+    
+    Args:
+        problem_dir: Path to the problem directory
+        overwrite: Whether to overwrite existing results
+        
+    Returns:
+        Dictionary containing solution status and metadata
+    """
+    from pathlib import Path
+    
+    problem_dir = Path(problem_dir)
+    spec_path = problem_dir / "spec.json"
+    result_path = problem_dir / "geo_result.json"
+    
+    # Check if spec.json exists
+    if not spec_path.exists():
+        return {
+            "status": "error",
+            "error": f"spec.json not found in {problem_dir}",
+            "spec_path": str(spec_path)
+        }
+    
+    # Check if result already exists and overwrite is False
+    if not overwrite and result_path.exists():
+        try:
+            with result_path.open("r", encoding="utf-8") as f:
+                existing_result = json.load(f)
+            return {
+                "status": "skipped",
+                "reason": "Result already exists and overwrite=False",
+                "spec_path": str(spec_path),
+                "result_path": str(result_path),
+                "existing_result": existing_result
+            }
+        except Exception as e:
+            # If we can't read existing result, proceed with solving
+            pass
+    
+    # Load and solve the specification
+    try:
+        spec = load_spec(str(spec_path))
+        points = plan_and_solve(spec)
+        
+        # Scale points into the specified box if present
+        if "box" in spec:
+            scaled_points, scale_factor = scale_into_box(points, spec["box"])
+            result = {
+                "status": "solved",
+                "points": scaled_points,
+                "scale_factor": scale_factor,
+                "original_points": points
+            }
+        else:
+            result = {
+                "status": "solved", 
+                "points": points,
+                "scale_factor": 1.0
+            }
+            
+    except Exception as e:
+        result = {
+            "status": "error",
+            "error": str(e),
+            "points": {},
+            "scale_factor": 1.0
+        }
+    
+    # Save result to file
+    try:
+        with result_path.open("w", encoding="utf-8") as f:
+            json.dump(result, f, ensure_ascii=False, indent=2)
+        result["result_path"] = str(result_path)
+    except Exception as e:
+        result["status"] = "error"
+        result["error"] = f"Failed to save result: {str(e)}"
+    
+    result["spec_path"] = str(spec_path)
+    return result
+
+
+def solve_spec(spec: dict) -> dict:
+    """Solve a single geometric specification.
+    
+    Args:
+        spec: Geometric specification dictionary
+        
+    Returns:
+        Dictionary containing solved points and metadata
+    """
+    try:
+        # Use planner to solve the specification
+        points = plan_and_solve(spec)
+        
+        # Scale points into the specified box if present
+        if "box" in spec:
+            scaled_points, scale_factor = scale_into_box(points, spec["box"])
+            return {
+                "status": "solved",
+                "points": scaled_points,
+                "scale_factor": scale_factor,
+                "original_points": points
+            }
+        else:
+            return {
+                "status": "solved", 
+                "points": points,
+                "scale_factor": 1.0
+            }
+            
+    except Exception as e:
+        return {
+            "status": "error",
+            "error": str(e),
+            "points": {},
+            "scale_factor": 1.0
+        }
+
+
+def solve_spec_file(spec_path: str) -> dict:
+    """Solve a geometric specification from a file.
+    
+    Args:
+        spec_path: Path to the specification JSON file
+        
+    Returns:
+        Dictionary containing solved points and metadata
+    """
+    try:
+        spec = load_spec(spec_path)
+        return solve_spec(spec)
+    except Exception as e:
+        return {
+            "status": "error",
+            "error": f"Failed to load or solve spec from {spec_path}: {str(e)}",
+            "points": {},
+            "scale_factor": 1.0
+        }

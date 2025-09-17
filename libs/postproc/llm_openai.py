@@ -1,11 +1,16 @@
 import os
 from openai import OpenAI
+from dotenv import load_dotenv
 
 class OpenAICompatLLM:
-    def __init__(self, base_url: str, api_key: str, model: str,
+    def __init__(self, base_url: str = None, api_key: str = None, model: str = None,
                  system_prompt_path=None, temperature: float = 0.2):
-        self.client = OpenAI(base_url=base_url, api_key=api_key)
-        self.model = model
+        # .env 파일에서 설정 로드 (다른 모듈들과 동일)
+        load_dotenv()
+        
+        # 기본값 설정 (다른 모듈들과 동일)
+        self.client = OpenAI(api_key=api_key or os.environ.get("OPENAI_API_KEY", ""))
+        self.model = model or "gpt-4o-mini"
         self.temperature = temperature
 
         if system_prompt_path is None:

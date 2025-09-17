@@ -199,10 +199,17 @@ def run_stage_b(paths: PipelinePaths) -> Dict[str, Any]:
         str(paths.vector_json),
         args=args,
     )
+    # payload는 리스트이므로 pictures 개수를 다르게 계산
+    picture_count = 0
+    if isinstance(payload, list):
+        picture_count = sum(1 for item in payload if isinstance(item, dict) and item.get("category") == "Picture")
+    elif isinstance(payload, dict):
+        picture_count = len(payload.get("pictures", []))
+    
     return {
         "status": "ok",
         "vector_json": str(paths.vector_json),
-        "picture_count": len(payload.get("pictures", [])),
+        "picture_count": picture_count,
     }
 
 
@@ -385,12 +392,9 @@ def _load_postproc_conf() -> Dict[str, Any]:
         enabled = False
     else:
         enabled = cfg.get("enabled", False)
-
+    
     return {
         "enabled": enabled,
-        "model": cfg.get("model", ""),
-        "base_url": cfg.get("base_url", ""),
-        "api_key": cfg.get("api_key", "EMPTY"),
         "temperature": float(cfg.get("temperature", 0.2)),
         "max_loops": int(cfg.get("max_loops", 3)),
         "quality": cfg.get("quality", "-ql"),
@@ -414,10 +418,6 @@ def run_postproc_stage(problem_name: str, base_dir: Path) -> Optional[Dict[str, 
         return None
 
     llm = OpenAICompatLLM(
-        base_url=conf["base_url"],
-        api_key=conf["api_key"],
-        model=conf["model"],
-        system_prompt_path=None,
         temperature=conf["temperature"],
     )
     code_path, video_path, proof = postprocess_and_render(
