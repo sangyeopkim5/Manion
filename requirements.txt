@@ -34,12 +34,4 @@ autoawq
 ## config parsing
 toml
 
-## c_geo_codegen requirements
-tomllib  # Python 3.11+ built-in, but needed for older versions
-
-## d_geo_compute requirements
-
-## e_cas_codegen requirements
-tomllib  # Already added above
-
 manim>=0.18.0  # For Manim animation rendering
