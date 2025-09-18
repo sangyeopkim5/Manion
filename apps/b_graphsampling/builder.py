@@ -101,9 +101,7 @@ def build_outputschema(problem_dir: str, output_path: str, args: Any | None = No
         print("[WARN] No crop images found for vectorization")
         return original_data
     
-    # 첫 번째 crop 이미지만 사용
-    crop_image = crop_images[0]
-    print(f"[b_graphsampling] Using crop image: {crop_image}")
+    print(f"[b_graphsampling] Found {len(crop_images)} crop images: {crop_images}")
     
     # vector화 수행
     if args is not None and getattr(args, "emit_anchors", False):
@@ -115,29 +113,57 @@ def build_outputschema(problem_dir: str, output_path: str, args: Any | None = No
                     fw = float(parts[0])
                     fh = float(parts[1])
             
-            # crop된 이미지 전체를 vector화 (bbox 없이)
-            anchor_item = build_anchor_item(
-                image_path=crop_image,
-                frame_w=fw,
-                frame_h=fh,
-                dpi=getattr(args, "dpi", 300),
-                vectorizer=getattr(args, "vectorizer", "potrace"),
-                points_per_path=getattr(args, "points_per_path", 600),
-                crop_bbox=None,  # crop된 이미지 전체 사용
-            )
+            # 모든 crop 이미지에 대해 vector화 수행
+            vector_anchors_list = []
+            picture_items = []
             
-            # Picture 블록 찾아서 vector_anchors 추가
+            # Picture 블록들 찾기
             if isinstance(original_data, list):
                 for item in original_data:
                     if isinstance(item, dict) and item.get("category") == "Picture":
-                        item["vector_anchors"] = anchor_item
-                        break
+                        picture_items.append(item)
             
-            # 수정된 원본 JSON을 원본 파일에 덮어쓰기
+            # 각 crop 이미지에 대해 vector화
+            for i, crop_image in enumerate(crop_images):
+                print(f"[b_graphsampling] Processing crop image {i}: {crop_image}")
+                
+                anchor_item = build_anchor_item(
+                    image_path=crop_image,
+                    frame_w=fw,
+                    frame_h=fh,
+                    dpi=getattr(args, "dpi", 300),
+                    vectorizer=getattr(args, "vectorizer", "potrace"),
+                    points_per_path=getattr(args, "points_per_path", 600),
+                    crop_bbox=None,  # crop된 이미지 전체 사용
+                )
+                
+                # 각 anchor_item에 이미지 인덱스 정보 추가
+                anchor_item["image_index"] = i
+                anchor_item["image_path"] = crop_image
+                vector_anchors_list.append(anchor_item)
+                
+                # 해당하는 Picture 블록에 vector_anchors 추가
+                if i < len(picture_items):
+                    picture_items[i]["vector_anchors"] = anchor_item
+            
+            # 1. 기존 JSON에 vector_anchors 추가 (기존 기능 유지)
             with open(original_json_path, "w", encoding="utf-8") as f:
                 json.dump(original_data, f, ensure_ascii=False, indent=2)
             
-            print(f"[b_graphsampling] Added vector_anchors to {original_json_path}")
+            print(f"[b_graphsampling] Added vector_anchors to {len(picture_items)} Picture blocks in {original_json_path}")
+            
+            # 2. 새로운 별도 vector 파일 생성 (모든 이미지의 벡터 정보 포함)
+            vector_file_path = os.path.join(problem_dir, "vector_anchors.json")
+            vector_data = {
+                "version": "1.0",
+                "total_images": len(vector_anchors_list),
+                "vector_anchors": vector_anchors_list
+            }
+            with open(vector_file_path, "w", encoding="utf-8") as f:
+                json.dump(vector_data, f, ensure_ascii=False, indent=2)
+            
+            print(f"[b_graphsampling] Created separate vector file with {len(vector_anchors_list)} images: {vector_file_path}")
+            
             return original_data
             
         except Exception as e:

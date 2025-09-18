@@ -140,16 +140,9 @@ def _find_crop_images(problem_dir: Path) -> List[Path]:
     return crop_images
 
 
-def _generate_spec_via_llm(paths: SpecPaths) -> Optional[tuple[Dict[str, Any], Dict[str, Any]]]:
-    ocr_path = paths.problem_dir / "problem.json"
-    if not ocr_path.exists():
-        return None
-
-    try:
-        ocr_data = _load_json(ocr_path)
-    except Exception:
-        return None
-
+def _generate_spec_for_single_image(image_index: int, vector_anchor_item: Dict[str, Any], crop_images: List[Path], paths: SpecPaths) -> Optional[tuple[Dict[str, Any], Dict[str, Any]]]:
+    """개별 이미지에 대해 spec을 생성"""
+    
     # .env에서 GPT API 키 읽기
     api_key = os.getenv("OPENAI_API_KEY")
     if not api_key:
@@ -158,17 +151,19 @@ def _generate_spec_via_llm(paths: SpecPaths) -> Optional[tuple[Dict[str, Any], D
     cfg = _load_openai_config()
     client = OpenAI(api_key=api_key)
 
-    # crop된 이미지 찾기
-    crop_images = _find_crop_images(paths.problem_dir)
+    # 해당 이미지의 crop 이미지 찾기
+    target_crop_image = None
+    if image_index < len(crop_images):
+        target_crop_image = crop_images[image_index]
     
     # 사용자 메시지 구성
     user_content = [
-        {"type": "text", "text": "다음은 문제의 OCR JSON입니다. 이 정보를 바탕으로 geo_system_prompt에 따라 spec.json을 JSON 형태로 작성하세요. 다른 설명 없이 오직 schema만 반환하세요.\n\n[OCR JSON]\n" + json.dumps(ocr_data, ensure_ascii=False, indent=2)}
+        {"type": "text", "text": f"다음은 문제의 {image_index + 1}번째 이미지의 벡터 정보입니다. 이 정보를 바탕으로 geo_system_prompt에 따라 spec.json을 JSON 형태로 작성하세요. 다른 설명 없이 오직 schema만 반환하세요.\n\n[Vector Anchor - Image {image_index + 1}]\n" + json.dumps(vector_anchor_item, ensure_ascii=False, indent=2)}
     ]
     
-    # crop된 이미지가 있으면 추가
-    for crop_image in crop_images:
-        encoded_image = _encode_image(crop_image)
+    # 해당 이미지만 추가
+    if target_crop_image:
+        encoded_image = _encode_image(target_crop_image)
         if encoded_image:
             user_content.append(encoded_image)
 
@@ -204,8 +199,125 @@ def _generate_spec_via_llm(paths: SpecPaths) -> Optional[tuple[Dict[str, Any], D
     return spec_obj, {
         "model": cfg.get("model"),
         "temperature": cfg.get("temperature"),
+        "image_index": image_index
     }
 
+def _generate_spec_via_llm(paths: SpecPaths) -> Optional[tuple[Dict[str, Any], Dict[str, Any]]]:
+    # vector_anchors.json 파일 찾기
+    vector_path = paths.problem_dir / "vector_anchors.json"
+    if not vector_path.exists():
+        print(f"[c_geo_codegen] No vector_anchors.json found in {paths.problem_dir}")
+        return None
+
+    try:
+        vector_data = _load_json(vector_path)
+    except Exception:
+        print(f"[c_geo_codegen] Failed to load vector_anchors.json")
+        return None
+
+    # crop된 이미지 찾기
+    crop_images = _find_crop_images(paths.problem_dir)
+    
+    vector_anchors = vector_data.get("vector_anchors", [])
+    if not vector_anchors:
+        print(f"[c_geo_codegen] No vector anchors found in vector_anchors.json")
+        return None
+    
+    # 각 이미지에 대해 개별적으로 spec 생성
+    specs = []
+    for i, vector_anchor_item in enumerate(vector_anchors):
+        print(f"[c_geo_codegen] Generating spec for image {i + 1}/{len(vector_anchors)}")
+        
+        spec_result = _generate_spec_for_single_image(i, vector_anchor_item, crop_images, paths)
+        if spec_result:
+            spec_obj, meta = spec_result
+            # 각 spec에 이미지 인덱스 정보 추가
+            spec_obj["meta"] = spec_obj.get("meta", {})
+            spec_obj["meta"]["image_index"] = i
+            spec_obj["meta"]["image_path"] = vector_anchor_item.get("image_path", "")
+            specs.append((spec_obj, meta))
+        else:
+            print(f"[c_geo_codegen] Failed to generate spec for image {i + 1}")
+    
+    if not specs:
+        return None
+    
+    # 첫 번째 성공한 spec을 반환 (기존 인터페이스 유지)
+    return specs[0]
+
+
+def generate_specs_for_all_images(
+    problem_dir: str | Path,
+    *,
+    overwrite: bool = False,
+) -> List[Dict[str, Any]]:
+    """모든 이미지에 대해 개별 spec.json 파일들을 생성"""
+    
+    problem_dir_path = Path(problem_dir).expanduser().resolve()
+    paths = SpecPaths(problem_dir=problem_dir_path, spec_path=problem_dir_path / "spec.json")
+    paths.problem_dir.mkdir(parents=True, exist_ok=True)
+
+    # vector_anchors.json 파일 찾기
+    vector_path = paths.problem_dir / "vector_anchors.json"
+    if not vector_path.exists():
+        print(f"[c_geo_codegen] No vector_anchors.json found in {paths.problem_dir}")
+        return []
+
+    try:
+        vector_data = _load_json(vector_path)
+    except Exception:
+        print(f"[c_geo_codegen] Failed to load vector_anchors.json")
+        return []
+
+    # crop된 이미지 찾기
+    crop_images = _find_crop_images(paths.problem_dir)
+    
+    vector_anchors = vector_data.get("vector_anchors", [])
+    if not vector_anchors:
+        print(f"[c_geo_codegen] No vector anchors found in vector_anchors.json")
+        return []
+    
+    generated_specs = []
+    
+    # 각 이미지에 대해 개별적으로 spec 생성
+    for i, vector_anchor_item in enumerate(vector_anchors):
+        print(f"[c_geo_codegen] Generating spec for image {i + 1}/{len(vector_anchors)}")
+        
+        # 개별 spec 파일 경로
+        spec_path = problem_dir_path / f"spec_{i}.json"
+        
+        # 이미 존재하고 overwrite가 False면 건너뛰기
+        if spec_path.exists() and not overwrite:
+            print(f"[c_geo_codegen] spec_{i}.json already exists, skipping")
+            try:
+                existing_spec = _load_json(spec_path)
+                generated_specs.append(existing_spec)
+                continue
+            except Exception:
+                print(f"[c_geo_codegen] Failed to load existing spec_{i}.json, regenerating")
+        
+        spec_result = _generate_spec_for_single_image(i, vector_anchor_item, crop_images, paths)
+        if spec_result:
+            spec_obj, meta = spec_result
+            # 각 spec에 이미지 인덱스 정보 추가
+            spec_obj["meta"] = spec_obj.get("meta", {})
+            spec_obj["meta"]["image_index"] = i
+            spec_obj["meta"]["image_path"] = vector_anchor_item.get("image_path", "")
+            spec_obj["meta"]["created_at"] = datetime.utcnow().isoformat() + "Z"
+            spec_obj["meta"]["generated_by"] = "llm"
+            spec_obj["meta"]["llm"] = meta
+            
+            # 개별 spec 파일 저장
+            spec_path.parent.mkdir(parents=True, exist_ok=True)
+            with spec_path.open("w", encoding="utf-8") as fh:
+                json.dump(spec_obj, fh, ensure_ascii=False, indent=2)
+            
+            print(f"[c_geo_codegen] Generated spec_{i}.json")
+            generated_specs.append(spec_obj)
+        else:
+            print(f"[c_geo_codegen] Failed to generate spec for image {i + 1}")
+    
+    return generated_specs
 
 def generate_spec(
     problem_dir: str | Path,

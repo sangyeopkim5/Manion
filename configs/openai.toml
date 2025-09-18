@@ -1,6 +1,6 @@
 [models]
 codegen = "gpt-5"
-postproc = "Qwen/Qwen2.5-Coder-14B-Instruct-AWQ"
+postproc = "gpt-4o-mini"
 
 [geo_codegen]
 model = "gpt-5"

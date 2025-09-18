@@ -60,46 +60,60 @@ class PipelinePaths:
         self.base_dir = self.base_dir.expanduser().resolve()
         self.problem_dir = self.base_dir / self.problem_name
         self.problem_dir.mkdir(parents=True, exist_ok=True)
+        
+        # 단계별 디렉토리 생성
+        self.stage_dirs = {}
+        for stage in STAGE_ORDER:
+            stage_dir = self.problem_dir / f"stage_{stage.value}"
+            stage_dir.mkdir(parents=True, exist_ok=True)
+            self.stage_dirs[stage] = stage_dir
 
     @property
     def ocr_json(self) -> Path:
-        return self.problem_dir / "problem.json"
+        return self.stage_dirs[Stage.A_OCR] / "problem.json"
 
     @property
     def ocr_markdown(self) -> Path:
-        return self.problem_dir / "problem.md"
+        return self.stage_dirs[Stage.A_OCR] / "problem.md"
 
     @property
     def ocr_visual(self) -> Path:
-        return self.problem_dir / "problem.jpg"
+        return self.stage_dirs[Stage.A_OCR] / "problem.jpg"
 
     @property
     def vector_json(self) -> Path:
-        return self.problem_dir / "vector.json"
+        return self.stage_dirs[Stage.B_GRAPH] / "vector_anchors.json"
 
     @property
     def spec(self) -> Path:
-        return self.problem_dir / "spec.json"
+        return self.stage_dirs[Stage.C_GEO_CODEGEN] / "spec.json"
 
     @property
     def codegen_output(self) -> Path:
-        return self.problem_dir / "codegen_output.py"
+        return self.stage_dirs[Stage.E_CAS_CODEGEN] / "codegen_output.py"
 
     @property
     def manim_draft(self) -> Path:
-        return self.problem_dir / "manim_draft.py"
+        return self.stage_dirs[Stage.E_CAS_CODEGEN] / "manim_draft.py"
 
     @property
     def cas_jobs(self) -> Path:
-        return self.problem_dir / "cas_jobs.json"
+        return self.stage_dirs[Stage.E_CAS_CODEGEN] / "cas_jobs.json"
 
     @property
     def cas_results(self) -> Path:
-        return self.problem_dir / "cas_results.json"
+        return self.stage_dirs[Stage.F_CAS_COMPUTE] / "cas_results.json"
 
     @property
     def final_code(self) -> Path:
         return self.problem_dir / "problem_final.py"
+    
+    def crop_images(self) -> List[Path]:
+        """크롭된 이미지 파일들을 반환"""
+        crop_images = []
+        for pattern in ["*__pic_i*.jpg", "*__pic_i*.png", "*__pic_i*.jpeg"]:
+            crop_images.extend(sorted(self.stage_dirs[Stage.A_OCR].glob(pattern)))
+        return crop_images
 
     def input_image_copy(self) -> Optional[Path]:
         for candidate in sorted(self.problem_dir.glob("problem_input.*")):
@@ -155,21 +169,23 @@ def run_stage_a(paths: PipelinePaths, image_path: str, *, overwrite: bool = Fals
         [p for p in search_root.rglob("*.jpg") if "__pic_i" not in p.stem]
     )
 
+    # Stage A 출력을 stage_a_ocr 디렉토리에 저장
     _copy_with_name(main_json, paths.ocr_json)
     if md_candidates:
         _copy_with_name(md_candidates[0], paths.ocr_markdown)
     if visual_candidates:
         _copy_with_name(visual_candidates[0], paths.ocr_visual)
 
+    # 크롭 이미지들을 stage_a_ocr 디렉토리에 저장
     for crop in search_root.rglob("*__pic_i*.jpg"):
-        _copy_with_name(crop, paths.problem_dir / crop.name)
+        _copy_with_name(crop, paths.stage_dirs[Stage.A_OCR] / crop.name)
     for crop in search_root.rglob("*__pic_i*.png"):
-        _copy_with_name(crop, paths.problem_dir / crop.name)
+        _copy_with_name(crop, paths.stage_dirs[Stage.A_OCR] / crop.name)
     for crop_json in search_root.rglob("*__pic_i*.json"):
-        _copy_with_name(crop_json, paths.problem_dir / crop_json.name)
+        _copy_with_name(crop_json, paths.stage_dirs[Stage.A_OCR] / crop_json.name)
 
-    # Preserve original image for downstream prompts
-    input_copy = paths.problem_dir / f"problem_input{src.suffix.lower()}"
+    # 원본 이미지를 stage_a_ocr 디렉토리에 보존
+    input_copy = paths.stage_dirs[Stage.A_OCR] / f"problem_input{src.suffix.lower()}"
     _copy_with_name(src, input_copy)
 
     shutil.rmtree(tmp_root, ignore_errors=True)
@@ -194,11 +210,14 @@ def run_stage_b(paths: PipelinePaths) -> Dict[str, Any]:
         vectorizer="potrace",
         points_per_path=600,
     )
+    
+    # Stage A의 출력 디렉토리를 입력으로 사용
     payload = build_outputschema(
-        str(paths.problem_dir),
+        str(paths.stage_dirs[Stage.A_OCR]),
         str(paths.vector_json),
         args=args,
     )
+    
     # payload는 리스트이므로 pictures 개수를 다르게 계산
     picture_count = 0
     if isinstance(payload, list):
@@ -232,47 +251,70 @@ def _has_pictures_in_ocr(problem_dir: Path) -> bool:
 
 def run_stage_c(paths: PipelinePaths, *, overwrite: bool = False) -> Dict[str, Any]:
     # Picture가 있는 경우에만 spec 생성 시도
-    if not _has_pictures_in_ocr(paths.problem_dir):
+    if not _has_pictures_in_ocr(paths.stage_dirs[Stage.A_OCR]):
         return {
             "status": "skipped",
             "reason": "No pictures found in OCR result",
             "spec_path": str(paths.spec),
         }
     
-    spec = generate_spec(
-        paths.problem_dir,
-        spec_path=paths.spec,
+    # Stage C의 새로운 함수 사용 (여러 이미지 처리)
+    from apps.c_geo_codegen import generate_specs_for_all_images
+    specs = generate_specs_for_all_images(
+        paths.stage_dirs[Stage.A_OCR],
         overwrite=overwrite,
     )
     
-    # spec이 생성되지 않은 경우 (그래프인 경우)
-    if not spec or spec.get("status") != "draft":
+    # 개별 spec 파일들을 stage_c_geo_codegen 디렉토리로 복사
+    for i, spec in enumerate(specs):
+        spec_file = paths.stage_dirs[Stage.C_GEO_CODEGEN] / f"spec_{i}.json"
+        with spec_file.open("w", encoding="utf-8") as f:
+            json.dump(spec, f, ensure_ascii=False, indent=2)
+    
+    if not specs:
         return {
             "status": "skipped",
-            "reason": "Graph detected, no spec generated",
+            "reason": "Graph detected, no specs generated",
             "spec_path": str(paths.spec),
         }
     
     return {
-        "status": spec.get("status", "draft"),
-        "spec_path": str(paths.spec),
+        "status": "draft",
+        "spec_count": len(specs),
+        "spec_paths": [str(paths.stage_dirs[Stage.C_GEO_CODEGEN] / f"spec_{i}.json") for i in range(len(specs))],
     }
 
 
 def run_stage_d(paths: PipelinePaths, *, overwrite: bool = True) -> Dict[str, Any]:
-    # spec.json이 없으면 스킵
-    if not paths.spec.exists():
+    # spec_*.json 파일들이 없으면 스킵
+    import glob
+    spec_files = glob.glob(str(paths.stage_dirs[Stage.C_GEO_CODEGEN] / "spec_*.json"))
+    if not spec_files:
         return {
             "status": "skipped",
-            "reason": "No spec.json found",
+            "reason": "No spec_*.json files found",
             "spec_path": str(paths.spec),
         }
     
     try:
-        spec = solve_in_problem_dir(paths.problem_dir, overwrite=overwrite)
+        # Stage D의 새로운 함수 사용 (여러 spec 처리)
+        from apps.d_geo_compute import solve_all_specs_in_problem_dir
+        results = solve_all_specs_in_problem_dir(paths.stage_dirs[Stage.C_GEO_CODEGEN], overwrite=overwrite)
+        
+        # 개별 결과 파일들을 stage_d_geo_compute 디렉토리로 복사
+        for result in results:
+            if result.get("status") == "solved" and "result_path" in result:
+                image_index = result.get("image_index", 0)
+                target_path = paths.stage_dirs[Stage.D_GEO_COMPUTE] / f"geo_result_{image_index}.json"
+                with open(result["result_path"], "r", encoding="utf-8") as src, target_path.open("w", encoding="utf-8") as dst:
+                    dst.write(src.read())
+        
+        solved_count = sum(1 for r in results if r.get("status") == "solved")
         return {
-            "status": spec.get("status", "solved"),
-            "spec_path": str(paths.spec),
+            "status": "solved" if solved_count > 0 else "failed",
+            "solved_count": solved_count,
+            "total_count": len(results),
+            "results": results,
         }
     except Exception as e:
         # 에러 발생 시 GPT로 자동 수정 시도
@@ -302,13 +344,25 @@ def run_stage_e(paths: PipelinePaths, *, force: bool = False) -> Dict[str, Any]:
     if image is None:
         raise FileNotFoundError("problem.jpg missing – run OCR stage first")
     
-    return run_cas_codegen(
-        paths.problem_dir,
-        spec_path=paths.spec if paths.spec.exists() else None,
+    # Stage E는 항상 실행 (스킵 없음)
+    from apps.e_cas_codegen import run_cas_codegen_for_multiple_results
+    result = run_cas_codegen_for_multiple_results(
+        paths.stage_dirs[Stage.A_OCR],  # A_OCR 디렉토리에서 OCR JSON과 이미지 읽기
         ocr_json_path=paths.ocr_json,
         image_path=image,
         force=force,
     )
+    
+    # 결과 파일들을 stage_e_cas_codegen 디렉토리로 복사
+    if result.get("code_path"):
+        import shutil
+        shutil.copy2(result["code_path"], paths.codegen_output)
+    if result.get("manim_path"):
+        shutil.copy2(result["manim_path"], paths.manim_draft)
+    if result.get("jobs_path"):
+        shutil.copy2(result["jobs_path"], paths.cas_jobs)
+    
+    return result
 
 
 def run_stage_f(paths: PipelinePaths, *, overwrite: bool = True) -> Dict[str, Any]:
@@ -381,9 +435,12 @@ def run_stage_g(paths: PipelinePaths) -> Dict[str, Any]:
 
 def _load_postproc_conf() -> Dict[str, Any]:
     try:
-        cfg = toml.load("configs/openai.toml").get("postproc", {})
+        full_cfg = toml.load("configs/openai.toml")
+        cfg = full_cfg.get("postproc", {})
+        models_cfg = full_cfg.get("models", {})
     except Exception:
         cfg = {}
+        models_cfg = {}
 
     override = os.environ.get("POSTPROC_ENABLED_OVERRIDE")
     if override == "1":
@@ -395,6 +452,7 @@ def _load_postproc_conf() -> Dict[str, Any]:
     
     return {
         "enabled": enabled,
+        "model": models_cfg.get("postproc", "gpt-4o-mini"),
         "temperature": float(cfg.get("temperature", 0.2)),
         "max_loops": int(cfg.get("max_loops", 3)),
         "quality": cfg.get("quality", "-ql"),
@@ -418,6 +476,7 @@ def run_postproc_stage(problem_name: str, base_dir: Path) -> Optional[Dict[str, 
         return None
 
     llm = OpenAICompatLLM(
+        model=conf["model"],
         temperature=conf["temperature"],
     )
     code_path, video_path, proof = postprocess_and_render(

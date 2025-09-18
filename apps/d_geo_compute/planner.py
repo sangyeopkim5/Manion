@@ -29,6 +29,105 @@ def scale_into_box(points:dict, box):
     return {k:arr[i] for i,k in enumerate(order)}, s
 
 
+def solve_all_specs_in_problem_dir(problem_dir, overwrite=True):
+    """Solve all geometric problems (spec_0.json, spec_1.json, ...) in a problem directory.
+    
+    Args:
+        problem_dir: Path to the problem directory
+        overwrite: Whether to overwrite existing results
+        
+    Returns:
+        List of dictionaries containing solution status and metadata for each spec
+    """
+    from pathlib import Path
+    import glob
+    
+    problem_dir = Path(problem_dir)
+    results = []
+    
+    # Find all spec_*.json files
+    spec_files = sorted(glob.glob(str(problem_dir / "spec_*.json")))
+    
+    if not spec_files:
+        return [{
+            "status": "error",
+            "error": f"No spec_*.json files found in {problem_dir}"
+        }]
+    
+    print(f"[d_geo_compute] Found {len(spec_files)} spec files to process")
+    
+    for spec_file in spec_files:
+        spec_path = Path(spec_file)
+        image_index = int(spec_path.stem.split('_')[1])  # spec_0.json -> 0
+        result_path = problem_dir / f"geo_result_{image_index}.json"
+        
+        print(f"[d_geo_compute] Processing {spec_path.name} -> {result_path.name}")
+        
+        # Check if result already exists and overwrite is False
+        if not overwrite and result_path.exists():
+            try:
+                with result_path.open("r", encoding="utf-8") as f:
+                    existing_result = json.load(f)
+                results.append({
+                    "status": "skipped",
+                    "reason": "Result already exists and overwrite=False",
+                    "spec_path": str(spec_path),
+                    "result_path": str(result_path),
+                    "image_index": image_index,
+                    "existing_result": existing_result
+                })
+                continue
+            except Exception as e:
+                # If we can't read existing result, proceed with solving
+                pass
+        
+        # Load and solve the specification
+        try:
+            spec = load_spec(str(spec_path))
+            points = plan_and_solve(spec)
+            
+            # Scale points into the specified box if present
+            if "box" in spec:
+                scaled_points, scale_factor = scale_into_box(points, spec["box"])
+                result = {
+                    "status": "solved",
+                    "spec_path": str(spec_path),
+                    "result_path": str(result_path),
+                    "image_index": image_index,
+                    "points": {k: v.tolist() if hasattr(v, 'tolist') else v for k, v in scaled_points.items()},
+                    "scale_factor": float(scale_factor),
+                    "box": spec["box"]
+                }
+            else:
+                result = {
+                    "status": "solved",
+                    "spec_path": str(spec_path),
+                    "result_path": str(result_path),
+                    "image_index": image_index,
+                    "points": {k: v.tolist() if hasattr(v, 'tolist') else v for k, v in points.items()},
+                    "scale_factor": 1.0
+                }
+            
+            # Save result to file
+            with result_path.open("w", encoding="utf-8") as f:
+                json.dump(result, f, ensure_ascii=False, indent=2)
+            
+            results.append(result)
+            print(f"[d_geo_compute] Successfully solved {spec_path.name}")
+            
+        except Exception as e:
+            error_result = {
+                "status": "error",
+                "error": str(e),
+                "spec_path": str(spec_path),
+                "result_path": str(result_path),
+                "image_index": image_index
+            }
+            results.append(error_result)
+            print(f"[d_geo_compute] Failed to solve {spec_path.name}: {e}")
+    
+    return results
+
 def solve_in_problem_dir(problem_dir, overwrite=True):
     """Solve geometric problems in a problem directory.
     

@@ -28,7 +28,8 @@ def postprocess_and_render(problem_name: str, llm, cfg: Config):
 
     proof = {"problem": problem_name, "steps": []}
 
-    # 2️⃣ LLM으로 최초 수정
+    # 2️⃣ LLM으로 최초 수정 (G 단계에서 생성된 Manim 코드 수정)
+    # 첫 번째 호출: System prompt + Manim 코드만 전달
     code = llm.propose_patch(code, error_log="")
     proof["steps"].append({"stage": "initial_llm_fix", "ok": True})
 
@@ -57,7 +58,8 @@ def postprocess_and_render(problem_name: str, llm, cfg: Config):
             _save_proof(proof_path, proof)
             return output_code_path, output_video_path, proof
 
-        # 실패 시 → 다시 LLM 수정
+        # 실패 시 → 다시 LLM 수정 (두 번째 호출)
+        # System prompt + Manim 코드 + Error log (3개 전달)
         code = llm.propose_patch(code, error_log=logs)
         with open(output_code_path, "w", encoding="utf-8") as f:
             f.write(code)

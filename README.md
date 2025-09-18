@@ -142,7 +142,7 @@ python -m pipelines.cli_e2e image.png --no-postproc
 ```toml
 [models]
 codegen = "gpt-4"  # Code generation model
-postproc = "Qwen/Qwen2.5-Coder-14B-Instruct-AWQ"  # Post-processing model
+postproc = "gpt-4o-mini"  # Post-processing model
 
 [gen]
 temperature = 1.0

@@ -22,8 +22,14 @@ class OpenAICompatLLM:
         with open(system_prompt_path, "r", encoding="utf-8") as f:
             self.system = f.read()
 
-    def propose_patch(self, code: str, error_log: str) -> str:
-        user = f"[ERROR LOG]\n{error_log}\n\n[CODE]\n{code}\n"
+    def propose_patch(self, code: str, error_log: str = "") -> str:
+        if error_log:
+            # 두 번째 호출: 에러 로그가 있을 때
+            user = f"[ERROR LOG]\n{error_log}\n\n[CODE]\n{code}\n"
+        else:
+            # 첫 번째 호출: 에러 로그 없이 코드만
+            user = f"[CODE]\n{code}\n"
+        
         res = self.client.chat.completions.create(
             model=self.model,
             temperature=self.temperature,

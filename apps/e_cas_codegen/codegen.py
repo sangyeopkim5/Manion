@@ -163,6 +163,156 @@ def _placeholder_output(problem_dir: Path, reason: str) -> CodegenResult:
     )
 
 
+def run_cas_codegen_for_multiple_results(
+    problem_dir: str | Path,
+    *,
+    ocr_json_path: str | Path | None = None,
+    image_path: Optional[str] = None,
+    force: bool = False,
+    model: Optional[str] = None,
+    temperature: Optional[float] = None,
+    client: Optional[OpenAI] = None,
+) -> Dict[str, Any]:
+    """항상 Manim 코드와 CAS 작업을 생성 (D 결과 유무에 관계없이)"""
+    
+    problem_dir_path = Path(problem_dir).expanduser().resolve()
+    ocr_json_path = Path(ocr_json_path or (problem_dir_path / "problem.json"))
+    image_candidate = Path(image_path).expanduser() if image_path else _select_problem_image(problem_dir_path)
+    
+    if not ocr_json_path.exists():
+        raise FileNotFoundError(f"problem.json not found at {ocr_json_path}")
+    
+    if not image_candidate or not image_candidate.exists():
+        raise FileNotFoundError(f"image file not found - required for cas_codegen")
+
+    # 모든 geo_result_*.json 파일 찾기 (D_geo_compute 디렉토리에서)
+    import glob
+    # A_OCR 디렉토리의 부모 디렉토리에서 D_geo_compute 디렉토리 찾기
+    parent_dir = problem_dir_path.parent
+    d_geo_dir = parent_dir / "stage_d_geo_compute"
+    
+    if d_geo_dir.exists():
+        result_files = sorted(glob.glob(str(d_geo_dir / "geo_result_*.json")))
+        print(f"[e_cas_codegen] Found {len(result_files)} geo result files in {d_geo_dir}")
+    else:
+        result_files = []
+        print(f"[e_cas_codegen] No D_geo_compute directory found at {d_geo_dir}")
+    
+    # 모든 결과 파일 로드
+    geo_results = []
+    for result_file in result_files:
+        try:
+            with open(result_file, "r", encoding="utf-8") as f:
+                result_data = json.load(f)
+            if result_data.get("status") == "solved":
+                geo_results.append(result_data)
+                print(f"[e_cas_codegen] Loaded {Path(result_file).name}")
+            else:
+                print(f"[e_cas_codegen] Skipped {Path(result_file).name} (status: {result_data.get('status')})")
+        except Exception as e:
+            print(f"[e_cas_codegen] Failed to load {result_file}: {e}")
+    
+    print(f"[e_cas_codegen] Loaded {len(geo_results)} valid geo results")
+    
+    code_path = problem_dir_path / "codegen_output.py"
+    manim_path = problem_dir_path / "manim_draft.py"
+    jobs_path = problem_dir_path / "cas_jobs.json"
+
+    if not force and code_path.exists() and manim_path.exists() and jobs_path.exists():
+        jobs = json.loads(jobs_path.read_text(encoding="utf-8"))
+        manim_code = manim_path.read_text(encoding="utf-8")
+        return CodegenResult(code_path, manim_path, jobs_path, jobs, manim_code, "reused").as_dict()
+
+    cfg = _load_openai_config()
+    model_name = model or cfg.get("model", "gpt-4o-mini")
+    temp = temperature if temperature is not None else cfg.get("temperature", 0.0)
+
+    if client is None:
+        api_key = os.getenv("OPENAI_API_KEY")
+        if not api_key:
+            return _placeholder_output(problem_dir_path, "OPENAI_API_KEY not configured").as_dict()
+        client = OpenAI(api_key=api_key)
+
+    # OCR 데이터 로드
+    ocr_data = json.loads(ocr_json_path.read_text(encoding="utf-8"))
+
+    # 이미지 수집 (순서 보장)
+    images: List[Path] = []
+    if image_candidate:
+        images.append(image_candidate)
+    
+    # crop 이미지들을 A_OCR 디렉토리에서 찾기
+    crop_images = _find_crop_images(problem_dir_path)
+    # 이미지 번호 순으로 정렬 (__pic_i0, __pic_i1, __pic_i2, ...)
+    crop_images.sort(key=lambda x: int(x.stem.split("__pic_i")[1]) if "__pic_i" in x.stem else 0)
+    images.extend(crop_images)
+    
+    print(f"[e_cas_codegen] Image order: {[img.name for img in images]}")
+    print(f"[e_cas_codegen] Geo results order: {[result.get('image_index', i) for i, result in enumerate(geo_results)]}")
+
+    # 사용자 메시지 구성 - D 결과 유무에 따른 분기
+    if geo_results:
+        # D 결과가 있는 경우: OCR JSON + 문제 전체 OCR 사진 + system_prompt + 개별 crop 이미지 + 매칭된 D 결과
+        user_sections = [
+            "문제의 OCR JSON과 여러 개의 해결된 기하학적 결과들을 참고하여 통합된 Manim 코드와 ---CAS-JOBS--- JSON 배열을 생성하세요.",
+            f"총 {len(geo_results)}개의 기하학적 결과가 있습니다.",
+            "[OCR JSON]\n" + json.dumps(ocr_data, ensure_ascii=False, indent=2),
+        ]
+        
+        # 각 기하학적 결과를 순서대로 추가 (이미지와 JSON 결과 번호 매칭)
+        for i, geo_result in enumerate(geo_results):
+            image_index = geo_result.get("image_index", i)
+            user_sections.extend([
+                f"[Geometry Result {i + 1} - Image {image_index}]\n" + json.dumps(geo_result, ensure_ascii=False, indent=2),
+            ])
+        
+        user_sections.extend([
+            "위의 모든 기하학적 결과들을 하나의 통합된 Manim Scene으로 구성하세요. 각 결과는 해당하는 크롭된 이미지와 매칭되며, 별도의 도형으로 그려지되 전체적으로 조화롭게 배치하세요.",
+            "이미지 번호와 JSON 결과 번호가 일치하므로, 각 Geometry Result는 해당 번호의 크롭된 이미지와 매칭됩니다."
+        ])
+    else:
+        # D 결과가 없는 경우: OCR JSON + 문제 전체 OCR 사진 + system_prompt
+        user_sections = [
+            "문제의 OCR JSON과 이미지를 참고하여 Manim 코드와 ---CAS-JOBS--- JSON 배열을 생성하세요.",
+            "[OCR JSON]\n" + json.dumps(ocr_data, ensure_ascii=False, indent=2),
+        ]
+
+    user_parts: List[Dict[str, Any]] = [{"type": "text", "text": "\n\n".join(user_sections)}]
+    user_parts.extend(_gather_image_parts(images))
+
+    messages = [
+        {"role": "system", "content": load_system_prompt()},
+        {"role": "user", "content": user_parts},
+    ]
+
+    try:
+        response = client.chat.completions.create(
+            model=model_name,
+            temperature=temp,
+            messages=messages,
+        )
+    except Exception as e:
+        return _placeholder_output(problem_dir_path, f"OpenAI API error: {e}").as_dict()
+
+    content = response.choices[0].message.content or ""
+    
+    # CAS 작업과 Manim 코드 분리
+    cas_jobs, manim_code = extract_jobs_and_code(content)
+    
+    # 파일 저장
+    code_path.write_text(content, encoding="utf-8")
+    manim_path.write_text(manim_code, encoding="utf-8")
+    jobs_path.write_text(json.dumps(cas_jobs, ensure_ascii=False, indent=2), encoding="utf-8")
+
+    return CodegenResult(
+        code_path=code_path,
+        manim_path=manim_path,
+        jobs_path=jobs_path,
+        jobs=cas_jobs,
+        manim_code=manim_code,
+        status="generated",
+    ).as_dict()
+
 def run_cas_codegen(
     problem_dir: str | Path,
     *,
